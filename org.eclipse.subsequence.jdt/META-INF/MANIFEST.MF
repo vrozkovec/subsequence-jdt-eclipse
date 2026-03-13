@@ -1,0 +1,17 @@
+Manifest-Version: 1.0
+Automatic-Module-Name: org.eclipse.subsequence.jdt
+Bundle-ManifestVersion: 2
+Bundle-SymbolicName: org.eclipse.subsequence.jdt;singleton:=true
+Bundle-Version: 1.0.0.qualifier
+Bundle-Name: Subsequence Matching for JDT Content Assist
+Bundle-Vendor: Eclipse Contributors
+Bundle-RequiredExecutionEnvironment: JavaSE-17
+Bundle-ActivationPolicy: lazy
+Require-Bundle: org.eclipse.core.runtime,
+ org.eclipse.jdt.core;bundle-version="[3.14.0,4.0.0)",
+ org.eclipse.jdt.ui;bundle-version="[3.14.0,4.0.0)",
+ org.eclipse.jface.text,
+ org.eclipse.ui
+Export-Package: org.eclipse.subsequence.jdt.core,
+ org.eclipse.subsequence.jdt.completion,
+ org.eclipse.subsequence.jdt.preferences

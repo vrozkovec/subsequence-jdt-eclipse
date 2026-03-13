@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feature
+      id="org.eclipse.subsequence.jdt.feature"
+      label="Subsequence Matching for JDT Content Assist"
+      version="1.0.0.qualifier"
+      provider-name="Eclipse Contributors">
+
+   <description>
+      Provides subsequence (fuzzy) matching for Eclipse JDT Java content assist.
+      Typing &quot;hm&quot; will match &quot;HashMap&quot;, &quot;sbu&quot; will match &quot;StringBuilder&quot;, etc.
+      Matched characters are highlighted in bold.
+
+      Extracted from Eclipse Code Recommenders and rewritten as a lightweight standalone plugin
+      with zero external dependencies beyond JDT.
+   </description>
+
+   <copyright>
+      Copyright (c) 2010, 2024 Darmstadt University of Technology and others.
+   </copyright>
+
+   <license url="http://www.eclipse.org/legal/epl-v10.html">
+      Eclipse Public License - v 1.0
+   </license>
+
+   <plugin
+         id="org.eclipse.subsequence.jdt"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+</feature>

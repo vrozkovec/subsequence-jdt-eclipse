@@ -1,0 +1,27 @@
+# Eclipse
+.classpath
+.factorypath
+.project
+.settings/
+bin/
+
+# Intellij
+.idea/
+*.iml
+*.iws
+
+# Mac
+.DS_Store
+
+# Maven
+target/
+
+# Misc
+/velocity.log*
+/hs_err*
+/.apt_generated_tests/
+/.apt_generated/
+/.dbeaver-data-sources.xml
+/dependency-reduced-pom.xml
+**/.claude
+

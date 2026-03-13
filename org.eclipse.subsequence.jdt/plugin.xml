@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+	<!-- Define the proposal category -->
+	<extension point="org.eclipse.jdt.ui.javaCompletionProposalComputer"
+		id="subsequenceCategory"
+		name="Subsequence Matching">
+		<proposalCategory
+			icon="platform:/plugin/org.eclipse.jdt.ui/icons/full/obj16/jcu_obj.png"/>
+	</extension>
+
+	<!-- Register the proposal computer in the category -->
+	<extension point="org.eclipse.jdt.ui.javaCompletionProposalComputer"
+		id="subsequenceComputer">
+		<javaCompletionProposalComputer
+			activate="true"
+			categoryId="org.eclipse.subsequence.jdt.subsequenceCategory"
+			class="org.eclipse.subsequence.jdt.completion.SubsequenceCompletionProposalComputer"
+			needsSortingAfterFiltering="true">
+			<partition type="__java_string"/>
+			<partition type="__java_javadoc"/>
+			<partition type="__dftl_partition_content_type"/>
+		</javaCompletionProposalComputer>
+	</extension>
+
+	<!-- Preference page -->
+	<extension point="org.eclipse.ui.preferencePages">
+		<page
+			id="org.eclipse.subsequence.jdt.preferences.SubsequencePreferencePage"
+			category="org.eclipse.jdt.ui.preferences.CodeAssistPreferencePage"
+			class="org.eclipse.subsequence.jdt.preferences.SubsequencePreferencePage"
+			name="Subsequence Matching"/>
+	</extension>
+
+	<!-- Preference initializer -->
+	<extension point="org.eclipse.core.runtime.preferences">
+		<initializer class="org.eclipse.subsequence.jdt.preferences.SubsequencePreferenceInitializer"/>
+	</extension>
+</plugin>
