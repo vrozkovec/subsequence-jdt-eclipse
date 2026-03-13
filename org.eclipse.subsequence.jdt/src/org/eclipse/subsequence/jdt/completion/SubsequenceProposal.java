@@ -8,8 +8,12 @@
 package org.eclipse.subsequence.jdt.completion;
 
 import org.eclipse.jdt.ui.text.java.IJavaCompletionProposal;
+import org.eclipse.jface.text.DocumentEvent;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.IInformationControlCreator;
+import org.eclipse.jface.text.ITextViewer;
+import org.eclipse.jface.text.contentassist.ICompletionProposalExtension;
+import org.eclipse.jface.text.contentassist.ICompletionProposalExtension2;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension3;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension5;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension6;
@@ -23,7 +27,9 @@ import org.eclipse.swt.graphics.Point;
  * A wrapper around a standard {@link IJavaCompletionProposal} that overrides relevance and
  * display string to add subsequence match highlighting.
  */
-public class SubsequenceProposal implements IJavaCompletionProposal, ICompletionProposalExtension3, ICompletionProposalExtension5, ICompletionProposalExtension6 {
+public class SubsequenceProposal implements IJavaCompletionProposal, ICompletionProposalExtension,
+        ICompletionProposalExtension2, ICompletionProposalExtension3, ICompletionProposalExtension5,
+        ICompletionProposalExtension6 {
 
     private final IJavaCompletionProposal delegate;
     private final int adjustedRelevance;
@@ -110,6 +116,79 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
     @Override
     public Point getSelection(IDocument document) {
         return delegate.getSelection(document);
+    }
+
+    // --- ICompletionProposalExtension delegation ---
+
+    @Override
+    public void apply(IDocument document, char trigger, int offset) {
+        if (delegate instanceof ICompletionProposalExtension ext) {
+            ext.apply(document, trigger, offset);
+        } else {
+            delegate.apply(document);
+        }
+    }
+
+    @Override
+    public int getContextInformationPosition() {
+        if (delegate instanceof ICompletionProposalExtension ext) {
+            return ext.getContextInformationPosition();
+        }
+        return -1;
+    }
+
+    @Override
+    public char[] getTriggerCharacters() {
+        if (delegate instanceof ICompletionProposalExtension ext) {
+            return ext.getTriggerCharacters();
+        }
+        return null;
+    }
+
+    @Override
+    public boolean isValidFor(IDocument document, int offset) {
+        if (delegate instanceof ICompletionProposalExtension ext) {
+            return ext.isValidFor(document, offset);
+        }
+        return false;
+    }
+
+    // --- ICompletionProposalExtension2 delegation ---
+
+    @Override
+    public void apply(ITextViewer viewer, char trigger, int stateMask, int offset) {
+        if (delegate instanceof ICompletionProposalExtension2 ext2) {
+            ext2.apply(viewer, trigger, stateMask, offset);
+        } else if (delegate instanceof ICompletionProposalExtension ext) {
+            ext.apply(viewer.getDocument(), trigger, offset);
+        } else {
+            delegate.apply(viewer.getDocument());
+        }
+    }
+
+    @Override
+    public void selected(ITextViewer viewer, boolean smartToggle) {
+        if (delegate instanceof ICompletionProposalExtension2 ext2) {
+            ext2.selected(viewer, smartToggle);
+        }
+    }
+
+    @Override
+    public void unselected(ITextViewer viewer) {
+        if (delegate instanceof ICompletionProposalExtension2 ext2) {
+            ext2.unselected(viewer);
+        }
+    }
+
+    @Override
+    public boolean validate(IDocument document, int offset, DocumentEvent event) {
+        if (delegate instanceof ICompletionProposalExtension2 ext2) {
+            return ext2.validate(document, offset, event);
+        }
+        if (delegate instanceof ICompletionProposalExtension ext) {
+            return ext.isValidFor(document, offset);
+        }
+        return false;
     }
 
     // --- ICompletionProposalExtension3 delegation ---
