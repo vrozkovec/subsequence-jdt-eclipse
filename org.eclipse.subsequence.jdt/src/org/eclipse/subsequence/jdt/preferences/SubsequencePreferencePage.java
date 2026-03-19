@@ -14,7 +14,7 @@ import org.eclipse.jface.fieldassist.ControlDecoration;
 import org.eclipse.jface.fieldassist.FieldDecoration;
 import org.eclipse.jface.fieldassist.FieldDecorationRegistry;
 import org.eclipse.jface.preference.FieldEditorPreferencePage;
-import org.eclipse.jface.preference.FileFieldEditor;
+import org.eclipse.jface.preference.DirectoryFieldEditor;
 import org.eclipse.jface.preference.IntegerFieldEditor;
 import org.eclipse.jface.util.IPropertyChangeListener;
 import org.eclipse.jface.util.PropertyChangeEvent;
@@ -61,18 +61,17 @@ public class SubsequencePreferencePage extends FieldEditorPreferencePage impleme
 
         addField(prefixLengthEditor);
 
-        FileFieldEditor callModelEditor = new FileFieldEditor(
-                SubsequencePreferences.PREF_CALL_MODEL_ZIP_PATH,
-                "Call model ZIP path:",
+        DirectoryFieldEditor modelDirEditor = new DirectoryFieldEditor(
+                SubsequencePreferences.PREF_MODEL_DIR_PATH,
+                "Model directory:",
                 getFieldEditorParent());
-        callModelEditor.setFileExtensions(new String[] { "*.zip" }); //$NON-NLS-1$
-        addField(callModelEditor);
+        addField(modelDirEditor);
 
         getPreferenceStore().addPropertyChangeListener(new IPropertyChangeListener() {
 
             @Override
             public void propertyChange(PropertyChangeEvent event) {
-                if (SubsequencePreferences.PREF_CALL_MODEL_ZIP_PATH.equals(event.getProperty())) {
+                if (SubsequencePreferences.PREF_MODEL_DIR_PATH.equals(event.getProperty())) {
                     CallModelIndex.reset();
                 }
             }

@@ -11,6 +11,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
@@ -27,11 +28,17 @@ import org.eclipse.subsequence.jdt.preferences.SubsequencePreferences;
 import org.osgi.framework.FrameworkUtil;
 
 /**
- * Manages method-call frequency data from two sources:
+ * Manages method-call and constructor frequency data from multiple sources:
  * <ol>
- *   <li><b>Pre-trained models</b> — JBIF files lazily loaded from a ZIP archive (standard library types)</li>
+ *   <li><b>Pre-trained models</b> — JBIF/JSON files lazily loaded from ZIP archives (standard library types)</li>
  *   <li><b>Workspace analysis</b> — method call counts from the user's own code, stored as JSON</li>
  * </ol>
+ * Supports three model types:
+ * <ul>
+ *   <li>{@code *-call.zip} — instance method call frequency (JBIF format)</li>
+ *   <li>{@code *-statics.zip} — static method call frequency (JBIF format)</li>
+ *   <li>{@code *-ctor.zip} — constructor call counts (JSON format)</li>
+ * </ul>
  * Workspace data takes priority over pre-trained models when both exist for a type.
  * <p>
  * Thread-safe via {@link ConcurrentHashMap} and volatile fields.
@@ -43,63 +50,141 @@ public final class CallModelIndex {
 
     private static volatile CallModelIndex instance;
 
-    private final Path zipPath; // may be null if no ZIP configured
-    private final ConcurrentHashMap<String, Map<String, Double>> zipCache = new ConcurrentHashMap<>();
-    private final Set<String> missingZipTypes = ConcurrentHashMap.newKeySet();
+    private final Path callZipPath;    // *-call.zip (instance methods, JBIF)
+    private final Path staticsZipPath; // *-statics.zip (static methods, JBIF)
+    private final Path ctorZipPath;    // *-ctor.zip (constructors, JSON)
+
+    private final ConcurrentHashMap<String, Map<String, Double>> callCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Map<String, Double>> staticsCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Map<String, Double>> ctorCache = new ConcurrentHashMap<>();
+
+    private final Set<String> missingCallTypes = ConcurrentHashMap.newKeySet();
+    private final Set<String> missingStaticsTypes = ConcurrentHashMap.newKeySet();
+    private final Set<String> missingCtorTypes = ConcurrentHashMap.newKeySet();
+
     private volatile Map<String, Map<String, Double>> workspaceData = Collections.emptyMap();
 
-    private CallModelIndex(Path zipPath) {
-        this.zipPath = zipPath;
+    private CallModelIndex(Path callZipPath, Path staticsZipPath, Path ctorZipPath) {
+        this.callZipPath = callZipPath;
+        this.staticsZipPath = staticsZipPath;
+        this.ctorZipPath = ctorZipPath;
     }
 
     /**
      * Returns the method call probabilities for the given fully qualified type name.
      * <p>
-     * Checks workspace data first (user's actual usage patterns), then falls back to
-     * pre-trained ZIP models (standard library types). If both sources have data for a type,
-     * workspace data wins.
+     * Checks workspace data first, then the call ZIP (instance methods), then the statics ZIP
+     * (static methods). A type's methods are typically in one ZIP or the other, not both.
      *
      * @param qualifiedTypeName the fully qualified type name (dot-separated)
-     * @return map of method probabilities, or an empty map if no data exists
+     * @return map of method name to probability, or an empty map if no data exists
      */
     public Map<String, Double> getMethodProbabilities(String qualifiedTypeName) {
+        DiagnosticLog.log("[getMethodProbs] type='" + qualifiedTypeName //$NON-NLS-1$
+                + "' callZip=" + callZipPath + " staticsZip=" + staticsZipPath); //$NON-NLS-1$ //$NON-NLS-2$
         if (qualifiedTypeName == null) {
             return Collections.emptyMap();
         }
 
-        // Workspace data takes priority
+        // Load pre-trained model data (call ZIP then statics ZIP)
+        Map<String, Double> modelProbs = loadFromJbifZip(qualifiedTypeName, callZipPath, callCache, missingCallTypes);
+        if (modelProbs.isEmpty()) {
+            modelProbs = loadFromJbifZip(qualifiedTypeName, staticsZipPath, staticsCache, missingStaticsTypes);
+        }
+
+        // Load workspace analysis data
         Map<String, Double> wsProbs = workspaceData.get(qualifiedTypeName);
-        if (wsProbs != null && !wsProbs.isEmpty()) {
+
+        // Merge: workspace data supplements model data, keeping the higher probability for each method
+        if (modelProbs.isEmpty() && (wsProbs == null || wsProbs.isEmpty())) {
+            DiagnosticLog.log("[getMethodProbs] no data from any source"); //$NON-NLS-1$
+            return Collections.emptyMap();
+        }
+        if (wsProbs == null || wsProbs.isEmpty()) {
+            DiagnosticLog.log("[getMethodProbs] model only, size=" + modelProbs.size()); //$NON-NLS-1$
+            return modelProbs;
+        }
+        if (modelProbs.isEmpty()) {
+            DiagnosticLog.log("[getMethodProbs] workspace only, size=" + wsProbs.size()); //$NON-NLS-1$
             return wsProbs;
         }
 
-        // Fall back to ZIP model
-        if (zipPath == null || missingZipTypes.contains(qualifiedTypeName)) {
-            return Collections.emptyMap();
+        // Both sources have data — merge, taking the higher probability per method
+        Map<String, Double> merged = new HashMap<>(modelProbs);
+        for (var entry : wsProbs.entrySet()) {
+            merged.merge(entry.getKey(), entry.getValue(), Math::max);
         }
-
-        return zipCache.computeIfAbsent(qualifiedTypeName, this::loadFromZip);
+        DiagnosticLog.log("[getMethodProbs] merged model(" + modelProbs.size() //$NON-NLS-1$
+                + ")+workspace(" + wsProbs.size() + ")=" + merged.size()); //$NON-NLS-1$ //$NON-NLS-2$
+        return merged;
     }
 
     /**
-     * Loads and parses a JBIF model for the given type from the ZIP archive.
+     * Returns the constructor call probabilities for the given fully qualified type name.
+     * <p>
+     * Keys in the returned map are parameter signatures like {@code "()V"} or {@code "(I)V"}.
+     * Values are normalized probabilities (0.0-1.0) where the most common constructor gets 1.0.
+     *
+     * @param qualifiedTypeName the fully qualified type name (dot-separated)
+     * @return map of parameter signature to probability, or an empty map if no data exists
      */
-    private Map<String, Double> loadFromZip(String qualifiedTypeName) {
-        String entryPath = qualifiedTypeName.replace('.', '/') + ".jbif"; //$NON-NLS-1$
+    public Map<String, Double> getConstructorProbabilities(String qualifiedTypeName) {
+        if (qualifiedTypeName == null || ctorZipPath == null || missingCtorTypes.contains(qualifiedTypeName)) {
+            return Collections.emptyMap();
+        }
 
-        try (ZipFile zf = new ZipFile(zipPath.toFile())) {
+        return ctorCache.computeIfAbsent(qualifiedTypeName, this::loadFromCtorZip);
+    }
+
+    /**
+     * Loads and parses a JBIF model from a ZIP archive for the given type.
+     */
+    private static Map<String, Double> loadFromJbifZip(String qualifiedTypeName, Path zipPath,
+            ConcurrentHashMap<String, Map<String, Double>> cache, Set<String> missingTypes) {
+        if (zipPath == null || missingTypes.contains(qualifiedTypeName)) {
+            return Collections.emptyMap();
+        }
+
+        return cache.computeIfAbsent(qualifiedTypeName, typeName -> {
+            String entryPath = typeName.replace('.', '/') + ".jbif"; //$NON-NLS-1$
+
+            try (ZipFile zf = new ZipFile(zipPath.toFile())) {
+                ZipEntry entry = zf.getEntry(entryPath);
+                if (entry == null) {
+                    missingTypes.add(typeName);
+                    return Collections.emptyMap();
+                }
+
+                try (InputStream is = zf.getInputStream(entry)) {
+                    return JbifParser.parse(is);
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to load JBIF model for " + typeName + " from " + zipPath, e); //$NON-NLS-1$ //$NON-NLS-2$
+                missingTypes.add(typeName);
+                return Collections.emptyMap();
+            }
+        });
+    }
+
+    /**
+     * Loads and parses a constructor model from the ctor ZIP archive for the given type.
+     */
+    private Map<String, Double> loadFromCtorZip(String qualifiedTypeName) {
+        String entryPath = qualifiedTypeName.replace('.', '/') + ".json"; //$NON-NLS-1$
+
+        try (ZipFile zf = new ZipFile(ctorZipPath.toFile())) {
             ZipEntry entry = zf.getEntry(entryPath);
             if (entry == null) {
-                missingZipTypes.add(qualifiedTypeName);
+                missingCtorTypes.add(qualifiedTypeName);
                 return Collections.emptyMap();
             }
 
             try (InputStream is = zf.getInputStream(entry)) {
-                return JbifParser.parse(is);
+                return CtorModelParser.parse(is);
             }
         } catch (Exception e) {
-            LOG.warn("Failed to load call model for " + qualifiedTypeName, e); //$NON-NLS-1$
-            missingZipTypes.add(qualifiedTypeName);
+            LOG.warn("Failed to load ctor model for " + qualifiedTypeName, e); //$NON-NLS-1$
+            missingCtorTypes.add(qualifiedTypeName);
             return Collections.emptyMap();
         }
     }
@@ -169,7 +254,7 @@ public final class CallModelIndex {
     /**
      * Returns the singleton instance, creating it if needed.
      * <p>
-     * The instance is always created (even without a ZIP path configured) so that
+     * The instance is always created (even without model ZIPs configured) so that
      * workspace analysis data can still be used.
      *
      * @return the index instance, never {@code null}
@@ -186,8 +271,7 @@ public final class CallModelIndex {
                 return idx;
             }
 
-            Path zipPathResolved = resolveZipPath();
-            idx = new CallModelIndex(zipPathResolved);
+            idx = createFromModelDir();
             idx.loadWorkspaceDataFromDisk();
             instance = idx;
             return idx;
@@ -195,25 +279,64 @@ public final class CallModelIndex {
     }
 
     /**
-     * Resolves the configured ZIP path, returning {@code null} if not configured or missing.
+     * Creates a new index by auto-discovering ZIP files in the configured model directory.
+     * <p>
+     * Looks for files matching {@code *-call.zip}, {@code *-statics.zip}, and {@code *-ctor.zip}.
      */
-    private static Path resolveZipPath() {
-        String pathStr = SubsequencePreferences.getCallModelZipPath();
-        if (pathStr == null || pathStr.isBlank()) {
-            return null;
+    private static CallModelIndex createFromModelDir() {
+        String dirStr = SubsequencePreferences.getModelDirPath();
+        DiagnosticLog.log("[createFromModelDir] prefValue='" + dirStr + "'"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (dirStr == null || dirStr.isBlank()) {
+            DiagnosticLog.log("[createFromModelDir] EMPTY — returning null index"); //$NON-NLS-1$
+            return new CallModelIndex(null, null, null);
         }
 
-        Path path = Path.of(pathStr);
-        if (!Files.isRegularFile(path)) {
-            LOG.warn("Call model ZIP does not exist: " + pathStr); //$NON-NLS-1$
-            return null;
+        Path dir = Path.of(dirStr);
+        if (!Files.isDirectory(dir)) {
+            DiagnosticLog.log("[createFromModelDir] NOT A DIRECTORY: " + dirStr); //$NON-NLS-1$
+            LOG.warn("Model directory does not exist: " + dirStr); //$NON-NLS-1$
+            return new CallModelIndex(null, null, null);
         }
-        return path;
+
+        Path callZip = findZipBySuffix(dir, "-call.zip"); //$NON-NLS-1$
+        Path staticsZip = findZipBySuffix(dir, "-statics.zip"); //$NON-NLS-1$
+        Path ctorZip = findZipBySuffix(dir, "-ctor.zip"); //$NON-NLS-1$
+
+        DiagnosticLog.log("[createFromModelDir] call=" + callZip //$NON-NLS-1$
+                + " | statics=" + staticsZip //$NON-NLS-1$
+                + " | ctor=" + ctorZip); //$NON-NLS-1$
+
+        LOG.info("Model directory: " + dir //$NON-NLS-1$
+                + " | call=" + (callZip != null ? callZip.getFileName() : "none") //$NON-NLS-1$ //$NON-NLS-2$
+                + " | statics=" + (staticsZip != null ? staticsZip.getFileName() : "none") //$NON-NLS-1$ //$NON-NLS-2$
+                + " | ctor=" + (ctorZip != null ? ctorZip.getFileName() : "none")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        return new CallModelIndex(callZip, staticsZip, ctorZip);
+    }
+
+    /**
+     * Finds the first ZIP file in the directory whose name ends with the given suffix.
+     *
+     * @param dir    the directory to search
+     * @param suffix the filename suffix to match (e.g. {@code "-call.zip"})
+     * @return the path to the matching ZIP, or {@code null} if not found
+     */
+    private static Path findZipBySuffix(Path dir, String suffix) {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*" + suffix)) { //$NON-NLS-1$
+            for (Path path : stream) {
+                if (Files.isRegularFile(path)) {
+                    return path;
+                }
+            }
+        } catch (IOException e) {
+            LOG.warn("Failed to scan model directory for " + suffix, e); //$NON-NLS-1$
+        }
+        return null;
     }
 
     /**
      * Resets the singleton instance, forcing re-initialization on next access.
-     * Called when the call model ZIP path preference changes.
+     * Called when the model directory preference changes.
      */
     public static void reset() {
         instance = null;
