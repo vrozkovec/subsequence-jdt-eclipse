@@ -53,6 +53,7 @@ import org.eclipse.jface.text.ITextViewer;
 import org.eclipse.jface.text.contentassist.ICompletionProposal;
 import org.eclipse.jface.text.contentassist.IContextInformation;
 import org.eclipse.jface.viewers.StyledString.Styler;
+import org.eclipse.subsequence.jdt.callmodel.FrequencyBooster;
 import org.eclipse.subsequence.jdt.core.LCSS;
 import org.eclipse.subsequence.jdt.preferences.SubsequencePreferences;
 import org.eclipse.swt.graphics.Font;
@@ -221,7 +222,8 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
 
             int[] bestSequence = LCSS.bestSubsequence(matchingArea, prefix);
             int adjustedRelevance = computeRelevance(javaProposal, bestSequence, prefix, matchingArea,
-                    minPrefixLengthForTypes);
+                    minPrefixLengthForTypes)
+                    + FrequencyBooster.computeFrequencyBoost(coreProposal);
             int highlightAdjustment = computeHighlightAdjustment(javaProposal, coreProposal);
 
             result.add(new SubsequenceProposal(javaProposal, adjustedRelevance, bestSequence, boldStyler,

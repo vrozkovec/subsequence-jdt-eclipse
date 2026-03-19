@@ -44,13 +44,30 @@
 			name="Open Type (Subsequence)"
 			description="Open a type using subsequence matching"
 			categoryId="org.eclipse.jdt.ui.category.source"/>
+		<command
+			id="org.eclipse.subsequence.jdt.analyzeWorkspace"
+			name="Analyze Workspace Method Calls"
+			description="Scan workspace to learn method call frequencies for better content assist ranking"
+			categoryId="org.eclipse.jdt.ui.category.source"/>
 	</extension>
 
-	<!-- Handler for the Open Type command -->
+	<!-- Handlers -->
 	<extension point="org.eclipse.ui.handlers">
 		<handler
 			commandId="org.eclipse.subsequence.jdt.openType"
 			class="org.eclipse.subsequence.jdt.dialog.OpenSubsequenceTypeHandler"/>
+		<handler
+			commandId="org.eclipse.subsequence.jdt.analyzeWorkspace"
+			class="org.eclipse.subsequence.jdt.callmodel.WorkspaceAnalyzer"/>
+	</extension>
+
+	<!-- Menu contribution for Analyze Workspace -->
+	<extension point="org.eclipse.ui.menus">
+		<menuContribution locationURI="menu:navigate?after=open.ext4">
+			<command
+				commandId="org.eclipse.subsequence.jdt.analyzeWorkspace"
+				style="push"/>
+		</menuContribution>
 	</extension>
 
 	<!-- Default keybinding: Ctrl+Shift+Y (user can remap to Ctrl+Shift+T) -->

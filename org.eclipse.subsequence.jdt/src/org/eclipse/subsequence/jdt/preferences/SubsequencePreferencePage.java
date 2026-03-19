@@ -14,9 +14,13 @@ import org.eclipse.jface.fieldassist.ControlDecoration;
 import org.eclipse.jface.fieldassist.FieldDecoration;
 import org.eclipse.jface.fieldassist.FieldDecorationRegistry;
 import org.eclipse.jface.preference.FieldEditorPreferencePage;
+import org.eclipse.jface.preference.FileFieldEditor;
 import org.eclipse.jface.preference.IntegerFieldEditor;
+import org.eclipse.jface.util.IPropertyChangeListener;
+import org.eclipse.jface.util.PropertyChangeEvent;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.widgets.Text;
+import org.eclipse.subsequence.jdt.callmodel.CallModelIndex;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchPreferencePage;
 import org.eclipse.ui.preferences.ScopedPreferenceStore;
@@ -56,5 +60,22 @@ public class SubsequencePreferencePage extends FieldEditorPreferencePage impleme
                 + "scope are always included regardless of this setting.");
 
         addField(prefixLengthEditor);
+
+        FileFieldEditor callModelEditor = new FileFieldEditor(
+                SubsequencePreferences.PREF_CALL_MODEL_ZIP_PATH,
+                "Call model ZIP path:",
+                getFieldEditorParent());
+        callModelEditor.setFileExtensions(new String[] { "*.zip" }); //$NON-NLS-1$
+        addField(callModelEditor);
+
+        getPreferenceStore().addPropertyChangeListener(new IPropertyChangeListener() {
+
+            @Override
+            public void propertyChange(PropertyChangeEvent event) {
+                if (SubsequencePreferences.PREF_CALL_MODEL_ZIP_PATH.equals(event.getProperty())) {
+                    CallModelIndex.reset();
+                }
+            }
+        });
     }
 }
