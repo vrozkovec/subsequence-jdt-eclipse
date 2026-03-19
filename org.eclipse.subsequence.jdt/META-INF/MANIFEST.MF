@@ -8,10 +8,12 @@ Bundle-Vendor: Eclipse Contributors
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Bundle-ActivationPolicy: lazy
 Require-Bundle: org.eclipse.core.runtime,
+ org.eclipse.core.resources,
  org.eclipse.jdt.core;bundle-version="[3.14.0,4.0.0)",
  org.eclipse.jdt.ui;bundle-version="[3.14.0,4.0.0)",
  org.eclipse.jface.text,
  org.eclipse.ui
 Export-Package: org.eclipse.subsequence.jdt.core,
  org.eclipse.subsequence.jdt.completion,
+ org.eclipse.subsequence.jdt.dialog,
  org.eclipse.subsequence.jdt.preferences

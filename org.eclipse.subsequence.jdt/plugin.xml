@@ -36,4 +36,29 @@
 	<extension point="org.eclipse.core.runtime.preferences">
 		<initializer class="org.eclipse.subsequence.jdt.preferences.SubsequencePreferenceInitializer"/>
 	</extension>
+
+	<!-- Open Type (Subsequence) command -->
+	<extension point="org.eclipse.ui.commands">
+		<command
+			id="org.eclipse.subsequence.jdt.openType"
+			name="Open Type (Subsequence)"
+			description="Open a type using subsequence matching"
+			categoryId="org.eclipse.jdt.ui.category.source"/>
+	</extension>
+
+	<!-- Handler for the Open Type command -->
+	<extension point="org.eclipse.ui.handlers">
+		<handler
+			commandId="org.eclipse.subsequence.jdt.openType"
+			class="org.eclipse.subsequence.jdt.dialog.OpenSubsequenceTypeHandler"/>
+	</extension>
+
+	<!-- Default keybinding: Ctrl+Shift+Y (user can remap to Ctrl+Shift+T) -->
+	<extension point="org.eclipse.ui.bindings">
+		<key
+			sequence="M1+M2+Y"
+			commandId="org.eclipse.subsequence.jdt.openType"
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			contextId="org.eclipse.ui.contexts.window"/>
+	</extension>
 </plugin>
