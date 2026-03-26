@@ -14,9 +14,7 @@ package org.eclipse.subsequence.jdt.completion;
 import static java.lang.Math.min;
 import static org.eclipse.subsequence.jdt.core.LCSS.containsSubsequence;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -56,7 +54,7 @@ import org.eclipse.jface.viewers.StyledString.Styler;
 import org.eclipse.subsequence.jdt.callmodel.FrequencyBooster;
 import org.eclipse.subsequence.jdt.core.LCSS;
 import org.eclipse.subsequence.jdt.preferences.SubsequencePreferences;
-import org.eclipse.swt.graphics.Font;
+import org.eclipse.swt.graphics.TextStyle;
 import org.eclipse.ui.IEditorPart;
 
 /**
@@ -93,34 +91,6 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
     private static final int MODULE_DECLARATION = 28;
     private static final int MODULE_REF = 29;
 
-    // --- Reflection for BoldStylerProvider (may not exist in older Eclipse) ---
-    private static final Class<?> BOLD_STYLER_PROVIDER;
-    private static final Constructor<?> NEW_BOLD_STYLER_PROVIDER;
-    private static final Method GET_BOLD_STYLER;
-    private static final Method DISPOSE;
-
-    static {
-        Class<?> clazz = null;
-        Constructor<?> ctor = null;
-        Method getBold = null;
-        Method dispose = null;
-        try {
-            clazz = Class.forName("org.eclipse.jface.text.contentassist.BoldStylerProvider"); //$NON-NLS-1$
-            ctor = clazz.getDeclaredConstructor(Font.class);
-            ctor.setAccessible(true);
-            getBold = clazz.getDeclaredMethod("getBoldStyler"); //$NON-NLS-1$
-            getBold.setAccessible(true);
-            dispose = clazz.getDeclaredMethod("dispose"); //$NON-NLS-1$
-            dispose.setAccessible(true);
-        } catch (Exception e) {
-            // BoldStylerProvider not available - will fall back to COUNTER_STYLER
-        }
-        BOLD_STYLER_PROVIDER = clazz;
-        NEW_BOLD_STYLER_PROVIDER = ctor;
-        GET_BOLD_STYLER = getBold;
-        DISPOSE = dispose;
-    }
-
     // --- Reflection for JavaContentAssistInvocationContext internals ---
     private static final Field CORE_CONTEXT;
     private static final Field CU_FIELD;
@@ -145,7 +115,6 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
         CU_COMPUTED = cuComputed;
     }
 
-    private Object stylerProvider;
     private Styler styler;
 
     @Override
@@ -227,7 +196,7 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
             int highlightAdjustment = computeHighlightAdjustment(javaProposal, coreProposal);
 
             result.add(new SubsequenceProposal(javaProposal, adjustedRelevance, bestSequence, boldStyler,
-                    highlightAdjustment));
+                    highlightAdjustment, coreProposal, matchingArea));
         }
 
         return result;
@@ -411,22 +380,21 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
         return collector;
     }
 
+    /**
+     * Returns a {@link Styler} that renders matched characters in bold.
+     * Uses JFace's managed font registry — no disposal needed.
+     */
     private Styler getStyler() {
         if (styler != null) {
             return styler;
         }
-
-        if (NEW_BOLD_STYLER_PROVIDER != null && GET_BOLD_STYLER != null) {
-            try {
-                stylerProvider = NEW_BOLD_STYLER_PROVIDER.newInstance(JFaceResources.getDefaultFont());
-                styler = (Styler) GET_BOLD_STYLER.invoke(stylerProvider);
-            } catch (Exception e) {
-                styler = org.eclipse.jface.viewers.StyledString.COUNTER_STYLER;
+        styler = new Styler() {
+            @Override
+            public void applyStyles(TextStyle textStyle) {
+                textStyle.font = JFaceResources.getFontRegistry()
+                        .getBold(JFaceResources.DEFAULT_FONT);
             }
-        } else {
-            styler = org.eclipse.jface.viewers.StyledString.COUNTER_STYLER;
-        }
-
+        };
         return styler;
     }
 
@@ -444,16 +412,6 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
     @Override
     public void sessionEnded() {
         styler = null;
-
-        if (DISPOSE != null && stylerProvider != null) {
-            try {
-                DISPOSE.invoke(stylerProvider);
-            } catch (Exception e) {
-                // Ignore
-            }
-        }
-
-        stylerProvider = null;
     }
 
     /**

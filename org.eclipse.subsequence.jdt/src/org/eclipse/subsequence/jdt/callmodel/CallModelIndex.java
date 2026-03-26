@@ -28,10 +28,10 @@ import org.eclipse.subsequence.jdt.preferences.SubsequencePreferences;
 import org.osgi.framework.FrameworkUtil;
 
 /**
- * Manages method-call and constructor frequency data from multiple sources:
+ * Manages method-call and constructor frequency data from two sources:
  * <ol>
  *   <li><b>Pre-trained models</b> — JBIF/JSON files lazily loaded from ZIP archives (standard library types)</li>
- *   <li><b>Workspace analysis</b> — method call counts from the user's own code, stored as JSON</li>
+ *   <li><b>User data</b> — unified workspace analysis + completion acceptance counts via {@link CompletionTracker}</li>
  * </ol>
  * Supports three model types:
  * <ul>
@@ -39,7 +39,6 @@ import org.osgi.framework.FrameworkUtil;
  *   <li>{@code *-statics.zip} — static method call frequency (JBIF format)</li>
  *   <li>{@code *-ctor.zip} — constructor call counts (JSON format)</li>
  * </ul>
- * Workspace data takes priority over pre-trained models when both exist for a type.
  * <p>
  * Thread-safe via {@link ConcurrentHashMap} and volatile fields.
  */
@@ -62,8 +61,6 @@ public final class CallModelIndex {
     private final Set<String> missingStaticsTypes = ConcurrentHashMap.newKeySet();
     private final Set<String> missingCtorTypes = ConcurrentHashMap.newKeySet();
 
-    private volatile Map<String, Map<String, Double>> workspaceData = Collections.emptyMap();
-
     private CallModelIndex(Path callZipPath, Path staticsZipPath, Path ctorZipPath) {
         this.callZipPath = callZipPath;
         this.staticsZipPath = staticsZipPath;
@@ -73,8 +70,11 @@ public final class CallModelIndex {
     /**
      * Returns the method call probabilities for the given fully qualified type name.
      * <p>
-     * Checks workspace data first, then the call ZIP (instance methods), then the statics ZIP
-     * (static methods). A type's methods are typically in one ZIP or the other, not both.
+     * Merges data from two sources (max probability per method wins):
+     * <ol>
+     *   <li>Pre-trained JBIF models (call ZIP then statics ZIP)</li>
+     *   <li>User data — unified workspace analysis + completion acceptance via {@link CompletionTracker}</li>
+     * </ol>
      *
      * @param qualifiedTypeName the fully qualified type name (dot-separated)
      * @return map of method name to probability, or an empty map if no data exists
@@ -86,36 +86,48 @@ public final class CallModelIndex {
             return Collections.emptyMap();
         }
 
-        // Load pre-trained model data (call ZIP then statics ZIP)
+        // Source 1: Pre-trained model data (call ZIP then statics ZIP)
         Map<String, Double> modelProbs = loadFromJbifZip(qualifiedTypeName, callZipPath, callCache, missingCallTypes);
         if (modelProbs.isEmpty()) {
             modelProbs = loadFromJbifZip(qualifiedTypeName, staticsZipPath, staticsCache, missingStaticsTypes);
         }
 
-        // Load workspace analysis data
-        Map<String, Double> wsProbs = workspaceData.get(qualifiedTypeName);
+        // Source 2: User data (unified workspace + completion tracker)
+        Map<String, Double> userProbs = null;
+        try {
+            Map<String, Map<String, Double>> userData = CompletionTracker.getInstance().getNormalizedData();
+            userProbs = userData.get(qualifiedTypeName);
+        } catch (Exception e) {
+            // must never break completion
+        }
 
-        // Merge: workspace data supplements model data, keeping the higher probability for each method
-        if (modelProbs.isEmpty() && (wsProbs == null || wsProbs.isEmpty())) {
+        // Merge both sources — max probability per method wins
+        boolean hasModel = !modelProbs.isEmpty();
+        boolean hasUser = userProbs != null && !userProbs.isEmpty();
+
+        if (!hasModel && !hasUser) {
             DiagnosticLog.log("[getMethodProbs] no data from any source"); //$NON-NLS-1$
             return Collections.emptyMap();
         }
-        if (wsProbs == null || wsProbs.isEmpty()) {
+
+        // Fast path: only one source has data
+        if (!hasUser) {
             DiagnosticLog.log("[getMethodProbs] model only, size=" + modelProbs.size()); //$NON-NLS-1$
             return modelProbs;
         }
-        if (modelProbs.isEmpty()) {
-            DiagnosticLog.log("[getMethodProbs] workspace only, size=" + wsProbs.size()); //$NON-NLS-1$
-            return wsProbs;
+        if (!hasModel) {
+            DiagnosticLog.log("[getMethodProbs] user data only, size=" + userProbs.size()); //$NON-NLS-1$
+            return userProbs;
         }
 
-        // Both sources have data — merge, taking the higher probability per method
+        // Both sources — merge, taking the higher probability per method
         Map<String, Double> merged = new HashMap<>(modelProbs);
-        for (var entry : wsProbs.entrySet()) {
+        for (var entry : userProbs.entrySet()) {
             merged.merge(entry.getKey(), entry.getValue(), Math::max);
         }
-        DiagnosticLog.log("[getMethodProbs] merged model(" + modelProbs.size() //$NON-NLS-1$
-                + ")+workspace(" + wsProbs.size() + ")=" + merged.size()); //$NON-NLS-1$ //$NON-NLS-2$
+        DiagnosticLog.log("[getMethodProbs] merged sources: model=" + modelProbs.size() //$NON-NLS-1$
+                + " user=" + userProbs.size() //$NON-NLS-1$
+                + " total=" + merged.size()); //$NON-NLS-1$
         return merged;
     }
 
@@ -190,56 +202,12 @@ public final class CallModelIndex {
     }
 
     /**
-     * Sets workspace analysis data and persists it to disk.
-     *
-     * @param data map of type name to (method name to probability)
-     */
-    public void setWorkspaceData(Map<String, Map<String, Double>> data) {
-        this.workspaceData = data != null ? data : Collections.emptyMap();
-        saveWorkspaceDataToDisk();
-    }
-
-    /**
-     * Loads previously saved workspace data from the plugin state location.
-     */
-    private void loadWorkspaceDataFromDisk() {
-        Path file = getWorkspaceDataPath();
-        if (file == null || !Files.isRegularFile(file)) {
-            return;
-        }
-
-        try (BufferedReader reader = Files.newBufferedReader(file)) {
-            Map<String, Map<String, Double>> data = parseJson(reader);
-            this.workspaceData = data;
-            LOG.info("Loaded workspace call data: " + data.size() + " types"); //$NON-NLS-1$ //$NON-NLS-2$
-        } catch (Exception e) {
-            LOG.warn("Failed to load workspace call data", e); //$NON-NLS-1$
-        }
-    }
-
-    /**
-     * Saves current workspace data to the plugin state location as JSON.
-     */
-    private void saveWorkspaceDataToDisk() {
-        Path file = getWorkspaceDataPath();
-        if (file == null) {
-            return;
-        }
-
-        try {
-            Files.createDirectories(file.getParent());
-            try (BufferedWriter writer = Files.newBufferedWriter(file)) {
-                writeJson(writer, workspaceData);
-            }
-        } catch (IOException e) {
-            LOG.warn("Failed to save workspace call data", e); //$NON-NLS-1$
-        }
-    }
-
-    /**
      * Returns the path to the workspace data JSON file in the plugin state location.
+     * Package-private so {@link CompletionTracker} can reuse the same file path.
+     *
+     * @return the file path, or {@code null} if the state location cannot be determined
      */
-    private static Path getWorkspaceDataPath() {
+    static Path getWorkspaceDataPath() {
         try {
             var bundle = FrameworkUtil.getBundle(CallModelIndex.class);
             if (bundle == null) {
@@ -272,7 +240,6 @@ public final class CallModelIndex {
             }
 
             idx = createFromModelDir();
-            idx.loadWorkspaceDataFromDisk();
             instance = idx;
             return idx;
         }

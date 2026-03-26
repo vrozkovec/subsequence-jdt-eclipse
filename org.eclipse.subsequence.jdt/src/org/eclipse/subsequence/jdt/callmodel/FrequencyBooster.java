@@ -168,11 +168,12 @@ public final class FrequencyBooster {
      * Extracts the fully qualified declaring type name from a proposal's declaration signature.
      * <p>
      * Converts JVM signatures like {@code Ljava/util/HashMap;} to {@code java.util.HashMap}.
+     * Erases generic type parameters before resolving.
      *
      * @param proposal the completion proposal
      * @return the qualified type name, or {@code null} if it cannot be determined
      */
-    private static String extractTypeName(CompletionProposal proposal) {
+    public static String extractTypeName(CompletionProposal proposal) {
         char[] declSig = proposal.getDeclarationSignature();
         if (declSig == null || declSig.length == 0) {
             return null;

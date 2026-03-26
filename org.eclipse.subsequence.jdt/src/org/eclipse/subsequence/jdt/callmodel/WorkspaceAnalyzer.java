@@ -7,7 +7,6 @@
  */
 package org.eclipse.subsequence.jdt.callmodel;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -40,9 +39,9 @@ import org.eclipse.jdt.core.dom.MethodInvocation;
  * Eclipse command handler that analyzes all Java source files in the workspace
  * to count method call frequencies per declaring type.
  * <p>
- * The analysis runs as a background {@link Job} with progress reporting. Results
- * are normalized per type (most-called method gets 1.0) and stored via
- * {@link CallModelIndex#setWorkspaceData(Map)}.
+ * The analysis runs as a background {@link Job} with progress reporting. Raw counts
+ * are passed to {@link CompletionTracker#setWorkspaceCounts(Map)} which replaces
+ * workspace counters and resets user (completion) counters to zero.
  * <p>
  * Triggered from Navigate menu → "Analyze Workspace Method Calls".
  */
@@ -62,9 +61,8 @@ public class WorkspaceAnalyzer extends AbstractHandler {
                         return Status.CANCEL_STATUS;
                     }
 
-                    Map<String, Map<String, Double>> normalized = normalize(counts);
-                    CallModelIndex.getInstance().setWorkspaceData(normalized);
-                    LOG.info("Workspace analysis complete: " + normalized.size() + " types"); //$NON-NLS-1$ //$NON-NLS-2$
+                    CompletionTracker.getInstance().setWorkspaceCounts(counts);
+                    LOG.info("Workspace analysis complete: " + counts.size() + " types"); //$NON-NLS-1$ //$NON-NLS-2$
                     return Status.OK_STATUS;
                 } catch (Exception e) {
                     LOG.error("Workspace analysis failed", e); //$NON-NLS-1$
@@ -146,35 +144,6 @@ public class WorkspaceAnalyzer extends AbstractHandler {
 
         CompilationUnit ast = (CompilationUnit) parser.createAST(null);
         ast.accept(new MethodCallVisitor(counts));
-    }
-
-    /**
-     * Normalizes raw invocation counts to probabilities in [0.0, 1.0] per type.
-     * <p>
-     * The most-called method for each type receives 1.0, and all others are scaled
-     * proportionally.
-     *
-     * @param counts raw invocation counts
-     * @return normalized probabilities
-     */
-    static Map<String, Map<String, Double>> normalize(Map<String, Map<String, Integer>> counts) {
-        Map<String, Map<String, Double>> normalized = new HashMap<>();
-
-        for (var typeEntry : counts.entrySet()) {
-            Map<String, Integer> methodCounts = typeEntry.getValue();
-            int maxCount = methodCounts.values().stream().mapToInt(Integer::intValue).max().orElse(1);
-            if (maxCount == 0) {
-                continue;
-            }
-
-            Map<String, Double> probs = new HashMap<>();
-            for (var methodEntry : methodCounts.entrySet()) {
-                probs.put(methodEntry.getKey(), (double) methodEntry.getValue() / maxCount);
-            }
-            normalized.put(typeEntry.getKey(), Collections.unmodifiableMap(probs));
-        }
-
-        return normalized;
     }
 
     /**
