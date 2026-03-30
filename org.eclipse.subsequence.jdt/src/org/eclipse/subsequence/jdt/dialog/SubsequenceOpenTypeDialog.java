@@ -31,10 +31,14 @@ import org.eclipse.jface.viewers.DelegatingStyledCellLabelProvider.IStyledLabelP
 import org.eclipse.jface.viewers.LabelProvider;
 import org.eclipse.jface.viewers.StyledString;
 import org.eclipse.subsequence.jdt.core.LCSS;
+import org.eclipse.swt.SWT;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Menu;
+import org.eclipse.swt.widgets.MenuItem;
 import org.eclipse.swt.widgets.Shell;
+import org.eclipse.swt.widgets.Table;
 import org.eclipse.ui.dialogs.FilteredItemsSelectionDialog;
 
 /**
@@ -71,7 +75,84 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
     }
 
     @Override
+    protected Control createDialogArea(Composite parent) {
+        Control control = super.createDialogArea(parent);
+        Table table = findTable((Composite) control);
+        if (table != null) {
+            createTypeFilterContextMenu(table);
+        }
+        return control;
+    }
+
+    @Override
     protected Control createExtendedContentArea(Composite parent) {
+        return null;
+    }
+
+    /**
+     * Creates a right-click context menu on the table with "Add to Type Filters" actions.
+     */
+    private void createTypeFilterContextMenu(Table table) {
+        Menu menu = new Menu(table);
+
+        MenuItem addType = new MenuItem(menu, SWT.PUSH);
+        addType.setText("Add Type to Type Filters"); //$NON-NLS-1$
+        addType.addListener(SWT.Selection, e -> {
+            TypeEntry entry = getSelectedTypeEntry(table);
+            if (entry != null) {
+                TypeFilterHelper.addTypeFilter(entry.fullyQualifiedName());
+                applyFilter(); // refresh to hide the filtered type
+            }
+        });
+
+        MenuItem addPackage = new MenuItem(menu, SWT.PUSH);
+        addPackage.setText("Add Package to Type Filters"); //$NON-NLS-1$
+        addPackage.addListener(SWT.Selection, e -> {
+            TypeEntry entry = getSelectedTypeEntry(table);
+            if (entry != null && !entry.packageName().isEmpty()) {
+                TypeFilterHelper.addPackageFilter(entry.packageName());
+                applyFilter(); // refresh to hide filtered types
+            }
+        });
+
+        menu.addListener(SWT.Show, e -> {
+            TypeEntry entry = getSelectedTypeEntry(table);
+            addType.setEnabled(entry != null);
+            addPackage.setEnabled(entry != null && !entry.packageName().isEmpty());
+        });
+
+        table.setMenu(menu);
+    }
+
+    /**
+     * Returns the selected {@link TypeEntry} from the table, or {@code null}.
+     */
+    private TypeEntry getSelectedTypeEntry(Table table) {
+        int index = table.getSelectionIndex();
+        if (index >= 0) {
+            Object data = table.getItem(index).getData();
+            if (data instanceof TypeEntry entry) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Recursively finds the first {@link Table} widget in a composite hierarchy.
+     */
+    private static Table findTable(Composite parent) {
+        for (Control child : parent.getChildren()) {
+            if (child instanceof Table table) {
+                return table;
+            }
+            if (child instanceof Composite comp) {
+                Table result = findTable(comp);
+                if (result != null) {
+                    return result;
+                }
+            }
+        }
         return null;
     }
 
@@ -173,6 +254,10 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
         @Override
         public boolean matchItem(Object item) {
             if (!(item instanceof TypeEntry entry)) {
+                return false;
+            }
+            // Respect Eclipse Type Filters
+            if (TypeFilterHelper.isFiltered(entry.fullyQualifiedName())) {
                 return false;
             }
             String pattern = getPattern();

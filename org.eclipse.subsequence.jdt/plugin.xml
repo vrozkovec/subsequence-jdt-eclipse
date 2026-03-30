@@ -45,6 +45,11 @@
 			description="Open a type using subsequence matching"
 			categoryId="org.eclipse.jdt.ui.category.source"/>
 		<command
+			id="org.eclipse.subsequence.jdt.organizeImports"
+			name="Organize Imports (with Type Filters)"
+			description="Organize imports with the ability to add unwanted types to Type Filters"
+			categoryId="org.eclipse.jdt.ui.category.source"/>
+		<command
 			id="org.eclipse.subsequence.jdt.analyzeWorkspace"
 			name="Analyze Workspace Method Calls"
 			description="Scan workspace to learn method call frequencies for better content assist ranking"
@@ -57,15 +62,23 @@
 			commandId="org.eclipse.subsequence.jdt.openType"
 			class="org.eclipse.subsequence.jdt.dialog.OpenSubsequenceTypeHandler"/>
 		<handler
+			commandId="org.eclipse.subsequence.jdt.organizeImports"
+			class="org.eclipse.subsequence.jdt.dialog.OrganizeImportsWithFiltersHandler"/>
+		<handler
 			commandId="org.eclipse.subsequence.jdt.analyzeWorkspace"
 			class="org.eclipse.subsequence.jdt.callmodel.WorkspaceAnalyzer"/>
 	</extension>
 
-	<!-- Menu contribution for Analyze Workspace -->
+	<!-- Menu contributions -->
 	<extension point="org.eclipse.ui.menus">
 		<menuContribution locationURI="menu:navigate?after=open.ext4">
 			<command
 				commandId="org.eclipse.subsequence.jdt.analyzeWorkspace"
+				style="push"/>
+		</menuContribution>
+		<menuContribution locationURI="menu:navigate?after=open.ext4">
+			<command
+				commandId="org.eclipse.subsequence.jdt.organizeImports"
 				style="push"/>
 		</menuContribution>
 	</extension>
@@ -77,5 +90,16 @@
 			commandId="org.eclipse.subsequence.jdt.openType"
 			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
 			contextId="org.eclipse.ui.contexts.window"/>
+		<!-- Unbind existing Ctrl+Shift+M (Add Import) in Java editor -->
+		<key
+			sequence="M1+M2+M"
+			commandId=""
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			contextId="org.eclipse.jdt.ui.javaEditorScope"/>
+		<key
+			sequence="M1+M2+M"
+			commandId="org.eclipse.subsequence.jdt.organizeImports"
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			contextId="org.eclipse.jdt.ui.javaEditorScope"/>
 	</extension>
 </plugin>

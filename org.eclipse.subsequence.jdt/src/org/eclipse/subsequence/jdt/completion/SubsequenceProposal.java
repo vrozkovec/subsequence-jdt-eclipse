@@ -7,8 +7,14 @@
  */
 package org.eclipse.subsequence.jdt.completion;
 
+import java.lang.reflect.Field;
+
 import org.eclipse.jdt.core.CompletionProposal;
+import org.eclipse.jdt.internal.ui.JavaPlugin;
+import org.eclipse.jdt.internal.ui.text.java.AbstractJavaCompletionProposal;
+import org.eclipse.jdt.ui.PreferenceConstants;
 import org.eclipse.jdt.ui.text.java.IJavaCompletionProposal;
+import org.eclipse.jface.preference.IPreferenceStore;
 import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.DocumentEvent;
 import org.eclipse.jface.text.IDocument;
@@ -25,6 +31,7 @@ import org.eclipse.jface.viewers.StyledString.Styler;
 import org.eclipse.subsequence.jdt.callmodel.CompletionTracker;
 import org.eclipse.subsequence.jdt.callmodel.FrequencyBooster;
 import org.eclipse.subsequence.jdt.core.LCSS;
+import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.StyleRange;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.graphics.Point;
@@ -45,6 +52,40 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
     private final CompletionProposal coreProposal;
     private final String matchingArea;
     private int[] matchedIndices;
+
+    /** Cached reflective handle to {@code AbstractJavaCompletionProposal.fTextViewer}. */
+    private static volatile Field fTextViewerField;
+
+    /**
+     * Injects the {@link ITextViewer} into the delegate's private {@code fTextViewer}
+     * field so that linked-mode setup (parameter placeholders, cursor positioning)
+     * works when we bypass {@code ICompletionProposalExtension2.apply()}.
+     */
+    private static void injectTextViewer(AbstractJavaCompletionProposal target, ITextViewer viewer) {
+        try {
+            Field f = fTextViewerField;
+            if (f == null) {
+                f = AbstractJavaCompletionProposal.class.getDeclaredField("fTextViewer"); //$NON-NLS-1$
+                f.setAccessible(true);
+                fTextViewerField = f;
+            }
+            if (f.get(target) == null) {
+                f.set(target, viewer);
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            // Best effort — linked mode won't work but completion still applies
+        }
+    }
+
+    /**
+     * Returns {@code true} if the "Completion inserts" preference is active,
+     * {@code false} if "Completion overwrites" is active.
+     * Mirrors {@code AbstractJavaCompletionProposal.insertCompletion()}.
+     */
+    private static boolean insertCompletion() {
+        IPreferenceStore preference = JavaPlugin.getDefault().getPreferenceStore();
+        return preference.getBoolean(PreferenceConstants.CODEASSIST_INSERT_COMPLETION);
+    }
 
     /**
      * Creates a new subsequence proposal wrapping the given delegate.
@@ -160,6 +201,8 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
     @Override
     public void apply(IDocument document, char trigger, int offset) {
+        fixReplacementLength(offset);
+
         if (delegate instanceof ICompletionProposalExtension ext) {
             ext.apply(document, trigger, offset);
         } else {
@@ -196,12 +239,29 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
     @Override
     public void apply(ITextViewer viewer, char trigger, int stateMask, int offset) {
-        if (delegate instanceof ICompletionProposalExtension2 ext2) {
-            ext2.apply(viewer, trigger, stateMask, offset);
-        } else if (delegate instanceof ICompletionProposalExtension ext) {
+        if (delegate instanceof AbstractJavaCompletionProposal ajcp
+                && delegate instanceof ICompletionProposalExtension ext) {
+            // Compute replacement length respecting insert/overwrite mode.
+            // Mirrors the logic in AbstractJavaCompletionProposal.apply(ITextViewer,...):
+            //   insert mode  → replace prefix only (up to cursor)
+            //   overwrite mode → extend past cursor to end of identifier
+            // Ctrl toggles between the two modes.
+            fixReplacementLengthForViewer(ajcp, viewer.getDocument(), offset, stateMask);
+
+            // Inject the ITextViewer so linked mode (parameter placeholders) works.
+            // The normal ICompletionProposalExtension2.apply() does this, but we can't
+            // use that path because its validate() gate rejects subsequence-only matches.
+            injectTextViewer(ajcp, viewer);
             ext.apply(viewer.getDocument(), trigger, offset);
         } else {
-            delegate.apply(viewer.getDocument());
+            fixReplacementLength(offset);
+            if (delegate instanceof ICompletionProposalExtension2 ext2) {
+                ext2.apply(viewer, trigger, stateMask, offset);
+            } else if (delegate instanceof ICompletionProposalExtension ext) {
+                ext.apply(viewer.getDocument(), trigger, offset);
+            } else {
+                delegate.apply(viewer.getDocument());
+            }
         }
         recordAcceptance();
     }
@@ -220,17 +280,77 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
         }
     }
 
+    /**
+     * Fixes the delegate's replacement length to cover text from its replacement
+     * offset to the given cursor offset (insert-mode semantics).
+     * <p>
+     * Used by the {@code apply(IDocument, char, int)} path where no viewer or
+     * stateMask is available.
+     */
+    private void fixReplacementLength(int offset) {
+        if (delegate instanceof AbstractJavaCompletionProposal ajcp) {
+            int replacementOffset = ajcp.getReplacementOffset();
+            if (offset > replacementOffset) {
+                ajcp.setReplacementLength(offset - replacementOffset);
+            }
+        }
+    }
+
+    /**
+     * Sets the delegate's replacement length accounting for the Eclipse
+     * "Completion inserts / Completion overwrites" preference and the Ctrl toggle.
+     * <p>
+     * In <em>insert</em> mode the replacement covers only the typed prefix
+     * (from replacement offset to cursor). In <em>overwrite</em> mode it extends
+     * past the cursor to the end of the Java identifier, replacing the suffix
+     * that follows the cursor (e.g. "Enabled" in {@code setReq|Enabled}).
+     */
+    private static void fixReplacementLengthForViewer(
+            AbstractJavaCompletionProposal ajcp, IDocument document, int offset, int stateMask) {
+        int replacementOffset = ajcp.getReplacementOffset();
+        if (offset < replacementOffset) {
+            return;
+        }
+        int end = offset;
+        // Ctrl toggles between insert and overwrite — same as
+        // AbstractJavaCompletionProposal.MODIFIER_TOGGLE_COMPLETION_MODE
+        boolean toggleEating = (stateMask & SWT.CTRL) != 0;
+        if (!(insertCompletion() ^ toggleEating)) {
+            // Overwrite mode: extend replacement to end of identifier after cursor
+            try {
+                while (end < document.getLength() && Character.isJavaIdentifierPart(document.getChar(end))) {
+                    end++;
+                }
+            } catch (BadLocationException e) {
+                // fall back to cursor position
+            }
+        }
+        ajcp.setReplacementLength(end - replacementOffset);
+    }
+
     @Override
     public boolean validate(IDocument document, int offset, DocumentEvent event) {
         if (matchingArea != null && !matchingArea.isEmpty()) {
             // Use subsequence matching instead of prefix matching
             String currentPrefix = extractPrefix(document, offset);
             if (currentPrefix.isEmpty()) {
+                // Empty prefix is valid when user deletes all typed chars (event text is empty/null)
+                // but NOT when a non-identifier character was just typed (e.g., '(', ';')
+                if (event != null && event.getText() != null && !event.getText().isEmpty()) {
+                    return false;
+                }
                 return true;
             }
             int[] newSequence = LCSS.bestSubsequence(matchingArea, currentPrefix);
             if (newSequence.length > 0) {
                 matchedIndices = newSequence; // update highlighting for next render
+                // Track document changes to keep replacement length in sync, mirroring
+                // AbstractJavaCompletionProposal.validate() — needed so the delegate's
+                // selected() can show the correct overwrite-mode highlight.
+                if (event != null && delegate instanceof AbstractJavaCompletionProposal ajcp) {
+                    int delta = (event.getText() == null ? 0 : event.getText().length()) - event.getLength();
+                    ajcp.setReplacementLength(Math.max(ajcp.getReplacementLength() + delta, 0));
+                }
                 return true;
             }
             return false;
