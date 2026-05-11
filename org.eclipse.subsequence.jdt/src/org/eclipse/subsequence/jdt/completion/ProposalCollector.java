@@ -176,6 +176,11 @@ public class ProposalCollector extends CompletionRequestor {
     }
 
     @Override
+    public boolean isIgnored(char[] fullTypeName) {
+        return collector.isIgnored(fullTypeName);
+    }
+
+    @Override
     public boolean isAllowingRequiredProposals(int proposalKind, int requiredProposalKind) {
         return collector.isAllowingRequiredProposals(proposalKind, requiredProposalKind);
     }
