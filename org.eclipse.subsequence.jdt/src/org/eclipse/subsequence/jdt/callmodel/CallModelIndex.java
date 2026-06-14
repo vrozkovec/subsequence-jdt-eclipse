@@ -61,6 +61,10 @@ public final class CallModelIndex {
     private final Set<String> missingStaticsTypes = ConcurrentHashMap.newKeySet();
     private final Set<String> missingCtorTypes = ConcurrentHashMap.newKeySet();
 
+    /** Reverse index: simple class name → set of fully qualified names. */
+    private final ConcurrentHashMap<String, Set<String>> simpleNameIndex = new ConcurrentHashMap<>();
+    private volatile boolean trackerDataIndexed;
+
     private CallModelIndex(Path callZipPath, Path staticsZipPath, Path ctorZipPath) {
         this.callZipPath = callZipPath;
         this.staticsZipPath = staticsZipPath;
@@ -80,16 +84,32 @@ public final class CallModelIndex {
      * @return map of method name to probability, or an empty map if no data exists
      */
     public Map<String, Double> getMethodProbabilities(String qualifiedTypeName) {
-        DiagnosticLog.log("[getMethodProbs] type='" + qualifiedTypeName //$NON-NLS-1$
-                + "' callZip=" + callZipPath + " staticsZip=" + staticsZipPath); //$NON-NLS-1$ //$NON-NLS-2$
         if (qualifiedTypeName == null) {
             return Collections.emptyMap();
         }
+
+        // Unresolved type name (no dots) — resolve via reverse index
+        if (qualifiedTypeName.indexOf('.') < 0) {
+            return resolveAndGetMethodProbabilities(qualifiedTypeName);
+        }
+
+        return getMethodProbabilitiesForQualified(qualifiedTypeName);
+    }
+
+    /**
+     * Core lookup for a fully qualified type name.
+     */
+    private Map<String, Double> getMethodProbabilitiesForQualified(String qualifiedTypeName) {
+        DiagnosticLog.log("[getMethodProbs] type='" + qualifiedTypeName //$NON-NLS-1$
+                + "' callZip=" + callZipPath + " staticsZip=" + staticsZipPath); //$NON-NLS-1$ //$NON-NLS-2$
 
         // Source 1: Pre-trained model data (call ZIP then statics ZIP)
         Map<String, Double> modelProbs = loadFromJbifZip(qualifiedTypeName, callZipPath, callCache, missingCallTypes);
         if (modelProbs.isEmpty()) {
             modelProbs = loadFromJbifZip(qualifiedTypeName, staticsZipPath, staticsCache, missingStaticsTypes);
+        }
+        if (!modelProbs.isEmpty()) {
+            indexSimpleName(qualifiedTypeName);
         }
 
         // Source 2: User data (unified workspace + completion tracker)
@@ -97,6 +117,9 @@ public final class CallModelIndex {
         try {
             Map<String, Map<String, Double>> userData = CompletionTracker.getInstance().getNormalizedData();
             userProbs = userData.get(qualifiedTypeName);
+            if (userProbs != null && !userProbs.isEmpty()) {
+                indexSimpleName(qualifiedTypeName);
+            }
         } catch (Exception e) {
             // must never break completion
         }
@@ -129,6 +152,92 @@ public final class CallModelIndex {
                 + " user=" + userProbs.size() //$NON-NLS-1$
                 + " total=" + merged.size()); //$NON-NLS-1$
         return merged;
+    }
+
+    /**
+     * Resolves an unqualified type name via the reverse index and returns merged probabilities.
+     */
+    private Map<String, Double> resolveAndGetMethodProbabilities(String simpleName) {
+        ensureTrackerDataIndexed();
+
+        Set<String> candidates = simpleNameIndex.get(simpleName);
+        if (candidates == null || candidates.isEmpty()) {
+            DiagnosticLog.log("[getMethodProbs] no resolution for simple name: " + simpleName); //$NON-NLS-1$
+            return Collections.emptyMap();
+        }
+
+        if (candidates.size() == 1) {
+            String resolved = candidates.iterator().next();
+            DiagnosticLog.log("[getMethodProbs] resolved '" + simpleName + "' -> '" + resolved + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            return getMethodProbabilitiesForQualified(resolved);
+        }
+
+        // Ambiguous: merge results from all candidates
+        Map<String, Double> merged = new HashMap<>();
+        for (String candidate : candidates) {
+            for (var entry : getMethodProbabilitiesForQualified(candidate).entrySet()) {
+                merged.merge(entry.getKey(), entry.getValue(), Math::max);
+            }
+        }
+        DiagnosticLog.log("[getMethodProbs] resolved '" + simpleName + "' -> " //$NON-NLS-1$ //$NON-NLS-2$
+                + candidates.size() + " candidates, merged=" + merged.size()); //$NON-NLS-1$
+        return merged;
+    }
+
+    /**
+     * Registers a fully qualified type name in the simple-name reverse index.
+     */
+    private void indexSimpleName(String qualifiedTypeName) {
+        int lastDot = qualifiedTypeName.lastIndexOf('.');
+        if (lastDot > 0) {
+            String simpleName = qualifiedTypeName.substring(lastDot + 1);
+            simpleNameIndex.computeIfAbsent(simpleName, k -> ConcurrentHashMap.newKeySet())
+                    .add(qualifiedTypeName);
+        }
+    }
+
+    /**
+     * Indexes all type names from CompletionTracker data (called lazily on first unresolved lookup).
+     */
+    private void ensureTrackerDataIndexed() {
+        if (trackerDataIndexed) {
+            return;
+        }
+        try {
+            Map<String, Map<String, Double>> userData = CompletionTracker.getInstance().getNormalizedData();
+            for (String typeName : userData.keySet()) {
+                indexSimpleName(typeName);
+            }
+        } catch (Exception e) {
+            // must never break completion
+        }
+        trackerDataIndexed = true;
+    }
+
+    /**
+     * Resolves an unqualified type name to a fully qualified name, if unambiguous.
+     *
+     * @param simpleName the simple class name (no dots)
+     * @return the fully qualified name, or {@code null} if ambiguous or unknown
+     */
+    public String resolveSimpleName(String simpleName) {
+        if (simpleName == null || simpleName.indexOf('.') >= 0) {
+            return simpleName;
+        }
+        ensureTrackerDataIndexed();
+        Set<String> candidates = simpleNameIndex.get(simpleName);
+        if (candidates != null && candidates.size() == 1) {
+            return candidates.iterator().next();
+        }
+        return null;
+    }
+
+    /**
+     * Clears the simple-name reverse index (e.g. after workspace re-analysis).
+     */
+    void invalidateSimpleNameIndex() {
+        simpleNameIndex.clear();
+        trackerDataIndexed = false;
     }
 
     /**

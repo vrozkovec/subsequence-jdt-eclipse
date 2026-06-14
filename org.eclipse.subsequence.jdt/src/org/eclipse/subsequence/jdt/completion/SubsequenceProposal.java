@@ -28,6 +28,7 @@ import org.eclipse.jface.text.contentassist.ICompletionProposalExtension6;
 import org.eclipse.jface.text.contentassist.IContextInformation;
 import org.eclipse.jface.viewers.StyledString;
 import org.eclipse.jface.viewers.StyledString.Styler;
+import org.eclipse.subsequence.jdt.callmodel.CallModelIndex;
 import org.eclipse.subsequence.jdt.callmodel.CompletionTracker;
 import org.eclipse.subsequence.jdt.callmodel.FrequencyBooster;
 import org.eclipse.subsequence.jdt.core.LCSS;
@@ -434,12 +435,22 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
             }
 
             String typeName = FrequencyBooster.extractTypeName(coreProposal);
-            char[] nameChars = coreProposal.getName();
-            if (typeName == null || nameChars == null || nameChars.length == 0) {
+            if (typeName == null) {
                 return;
             }
 
-            CompletionTracker.getInstance().recordAcceptance(typeName, new String(nameChars));
+            // Resolve unqualified type names via the reverse index
+            if (typeName.indexOf('.') < 0) {
+                CallModelIndex idx = CallModelIndex.getInstance();
+                String resolved = idx != null ? idx.resolveSimpleName(typeName) : null;
+                if (resolved == null) {
+                    return;
+                }
+                typeName = resolved;
+            }
+
+            String methodKey = FrequencyBooster.buildMethodKey(coreProposal);
+            CompletionTracker.getInstance().recordAcceptance(typeName, methodKey);
         } catch (Exception e) {
             // must never break completion
         }

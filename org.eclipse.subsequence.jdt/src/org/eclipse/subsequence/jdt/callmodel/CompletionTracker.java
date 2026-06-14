@@ -156,6 +156,13 @@ public final class CompletionTracker {
 			data.putAll(newData);
 
 			saveToDisk();
+
+			// Invalidate the type-name reverse index so it rebuilds with the new data
+			CallModelIndex idx = CallModelIndex.getInstance();
+			if (idx != null) {
+				idx.invalidateSimpleNameIndex();
+			}
+
 			DiagnosticLog.log("[CompletionTracker] setWorkspaceCounts: " + data.size() + " types"); //$NON-NLS-1$ //$NON-NLS-2$
 		} catch (Exception e) {
 			DiagnosticLog.log("[CompletionTracker] error setWorkspaceCounts: " + e.getMessage()); //$NON-NLS-1$
@@ -229,7 +236,9 @@ public final class CompletionTracker {
 					for (var typeEntry : oldData.entrySet()) {
 						var methods = new ConcurrentHashMap<String, MethodCounts>();
 						for (var methodEntry : typeEntry.getValue().entrySet()) {
-							methods.put(methodEntry.getKey(), MethodCounts.ofWorkspace(methodEntry.getValue().intValue()));
+							// Scale old probabilities (0.0-1.0) to integer counts
+						methods.put(methodEntry.getKey(),
+								MethodCounts.ofWorkspace(Math.max(1, (int) Math.round(methodEntry.getValue() * 100))));
 						}
 						data.put(typeEntry.getKey(), methods);
 					}

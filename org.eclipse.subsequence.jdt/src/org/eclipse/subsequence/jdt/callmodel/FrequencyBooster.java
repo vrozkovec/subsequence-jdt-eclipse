@@ -88,10 +88,17 @@ public final class FrequencyBooster {
         }
 
         String methodName = new String(coreProposal.getName());
-        Double probability = probs.get(methodName);
+
+        // Try composite key (overload-aware) first, then fall back to plain method name
+        String compositeKey = buildCompositeKey(methodName, coreProposal);
+        Double probability = compositeKey != null ? probs.get(compositeKey) : null;
+        if (probability == null) {
+            probability = probs.get(methodName);
+        }
+
         int boost = probability != null ? (int) (probability * MAX_FREQUENCY_BOOST) : 0;
-        DiagnosticLog.log("[methodBoost] method='" + methodName + "' prob=" + probability //$NON-NLS-1$ //$NON-NLS-2$
-                + " boost=" + boost); //$NON-NLS-1$
+        DiagnosticLog.log("[methodBoost] method='" + methodName + "' key=" + compositeKey //$NON-NLS-1$ //$NON-NLS-2$
+                + " prob=" + probability + " boost=" + boost); //$NON-NLS-1$ //$NON-NLS-2$
         if (probability == null) {
             return 0;
         }
@@ -162,6 +169,35 @@ public final class FrequencyBooster {
             return (int) (bestMatch * MAX_FREQUENCY_BOOST);
         }
         return 0;
+    }
+
+    /**
+     * Builds a composite key {@code "methodName#paramCount"} from a method name and proposal signature.
+     *
+     * @return the composite key, or {@code null} if the param count cannot be determined
+     */
+    private static String buildCompositeKey(String methodName, CompletionProposal proposal) {
+        char[] sig = proposal.getSignature();
+        if (sig == null || sig.length == 0) {
+            return null;
+        }
+        try {
+            int paramCount = Signature.getParameterCount(new String(sig));
+            return methodName + '#' + paramCount;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds a composite key from the given method name and proposal.
+     *
+     * @return the composite key, or just the method name if param count cannot be determined
+     */
+    public static String buildMethodKey(CompletionProposal proposal) {
+        String methodName = new String(proposal.getName());
+        String composite = buildCompositeKey(methodName, proposal);
+        return composite != null ? composite : methodName;
     }
 
     /**

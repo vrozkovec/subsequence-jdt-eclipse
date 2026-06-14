@@ -37,10 +37,11 @@ public final class JbifParser {
     }
 
     /**
-     * Parses a JBIF stream and returns a map of simple method names to their marginal call probabilities.
+     * Parses a JBIF stream and returns a map of method keys to their marginal call probabilities.
+     * Keys use the composite format {@code "methodName#paramCount"} (e.g. {@code "put#2"}, {@code "get#1"}).
      *
      * @param in the input stream containing JBIF data
-     * @return map from method name (e.g. "put") to probability (0.0-1.0), never {@code null}
+     * @return map from composite method key to probability (0.0-1.0), never {@code null}
      * @throws IOException if the stream cannot be read or the format is invalid
      */
     public static Map<String, Double> parse(InputStream in) throws IOException {
@@ -112,9 +113,9 @@ public final class JbifParser {
                 }
             }
 
-            String methodName = extractMethodName(nodeName);
-            if (methodName != null && !"nothing".equals(methodName)) {
-                marginals.merge(methodName, marginal, Math::max);
+            String methodKey = extractMethodKey(nodeName);
+            if (methodKey != null && !methodKey.startsWith("nothing#")) { //$NON-NLS-1$
+                marginals.merge(methodKey, marginal, Math::max);
             }
         }
 
@@ -129,14 +130,14 @@ public final class JbifParser {
     }
 
     /**
-     * Extracts the simple method name from a JBIF node name.
+     * Extracts a composite key {@code "methodName#paramCount"} from a JBIF node name.
      * <p>
-     * Example: {@code Ljava/util/HashMap.put(Ljava/lang/Object;)V} yields {@code "put"}.
+     * Example: {@code Ljava/util/List.add(Ljava/lang/Object;)Z} yields {@code "add#1"}.
      *
      * @param nodeName the full JBIF node name
-     * @return the simple method name, or {@code null} if it cannot be extracted
+     * @return the composite key, or {@code null} if it cannot be extracted
      */
-    private static String extractMethodName(String nodeName) {
+    private static String extractMethodKey(String nodeName) {
         int parenIndex = nodeName.indexOf('(');
         if (parenIndex <= 0) {
             return null;
@@ -145,6 +146,37 @@ public final class JbifParser {
         if (dotIndex < 0 || dotIndex >= parenIndex - 1) {
             return null;
         }
-        return nodeName.substring(dotIndex + 1, parenIndex);
+        String methodName = nodeName.substring(dotIndex + 1, parenIndex);
+
+        int closeParenIndex = nodeName.indexOf(')', parenIndex);
+        if (closeParenIndex < 0) {
+            return methodName + "#0"; //$NON-NLS-1$
+        }
+        int paramCount = countJvmParams(nodeName, parenIndex + 1, closeParenIndex);
+        return methodName + '#' + paramCount;
+    }
+
+    /**
+     * Counts the number of parameters in a JVM method descriptor between the given bounds.
+     */
+    private static int countJvmParams(String sig, int start, int end) {
+        int count = 0;
+        int i = start;
+        while (i < end) {
+            char c = sig.charAt(i);
+            if (c == 'L') {
+                count++;
+                i = sig.indexOf(';', i) + 1;
+                if (i <= 0) {
+                    break;
+                }
+            } else if (c == '[') {
+                i++;
+            } else {
+                count++;
+                i++;
+            }
+        }
+        return count;
     }
 }

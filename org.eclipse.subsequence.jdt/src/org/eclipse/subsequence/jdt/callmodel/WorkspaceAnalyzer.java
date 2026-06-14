@@ -176,9 +176,9 @@ public class WorkspaceAnalyzer extends AbstractHandler {
                 return true;
             }
 
-            String methodName = binding.getName();
+            String methodKey = binding.getName() + '#' + binding.getParameterTypes().length;
             counts.computeIfAbsent(typeName, k -> new HashMap<>())
-                    .merge(methodName, 1, Integer::sum);
+                    .merge(methodKey, 1, Integer::sum);
 
             return true;
         }
