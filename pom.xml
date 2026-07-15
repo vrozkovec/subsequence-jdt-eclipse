@@ -19,6 +19,7 @@
 
     <modules>
         <module>org.eclipse.subsequence.jdt</module>
+        <module>org.eclipse.subsequence.jdt.tests</module>
         <module>org.eclipse.subsequence.jdt.feature</module>
         <module>org.eclipse.subsequence.jdt.repository</module>
     </modules>

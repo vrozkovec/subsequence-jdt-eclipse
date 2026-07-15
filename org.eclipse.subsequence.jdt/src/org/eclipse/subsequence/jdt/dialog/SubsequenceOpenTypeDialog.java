@@ -7,6 +7,9 @@
  */
 package org.eclipse.subsequence.jdt.dialog;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.Objects;
 import java.util.regex.PatternSyntaxException;
@@ -26,6 +29,7 @@ import org.eclipse.jdt.core.search.SearchPattern;
 import org.eclipse.jdt.core.search.TypeNameRequestor;
 import org.eclipse.jdt.ui.ISharedImages;
 import org.eclipse.jdt.ui.JavaUI;
+import org.eclipse.jface.dialogs.DialogSettings;
 import org.eclipse.jface.dialogs.IDialogSettings;
 import org.eclipse.jface.viewers.DelegatingStyledCellLabelProvider.IStyledLabelProvider;
 import org.eclipse.jface.viewers.LabelProvider;
@@ -40,6 +44,8 @@ import org.eclipse.swt.widgets.MenuItem;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.Table;
 import org.eclipse.ui.dialogs.FilteredItemsSelectionDialog;
+import org.osgi.framework.Bundle;
+import org.osgi.framework.FrameworkUtil;
 
 /**
  * A type selection dialog that supports subsequence matching.
@@ -55,6 +61,10 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
 
     private static final ILog LOG = Platform.getLog(SubsequenceOpenTypeDialog.class);
     private static final String DIALOG_SETTINGS_ID = "org.eclipse.subsequence.jdt.openTypeDialog"; //$NON-NLS-1$
+    private static final String SETTINGS_FILE = "open-type-dialog-settings.xml"; //$NON-NLS-1$
+
+    /** Shared disk-backed dialog settings (size, position, history) across invocations. */
+    private static volatile IDialogSettings dialogSettings;
 
     private final IJavaSearchScope searchScope;
 
@@ -158,10 +168,76 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
 
     @Override
     protected IDialogSettings getDialogSettings() {
-        // Dialog settings persist dialog size, position, and history between invocations.
-        // We store them in the Eclipse preferences for this plugin.
-        IDialogSettings root = new org.eclipse.jface.dialogs.DialogSettings(DIALOG_SETTINGS_ID);
-        return root;
+        // Dialog settings persist dialog size, position, and selection history between
+        // invocations. A single shared instance is loaded from the plugin state location
+        // on first use and written back every time the dialog closes.
+        IDialogSettings settings = dialogSettings;
+        if (settings == null) {
+            synchronized (SubsequenceOpenTypeDialog.class) {
+                settings = dialogSettings;
+                if (settings == null) {
+                    settings = loadDialogSettings();
+                    dialogSettings = settings;
+                }
+            }
+        }
+        return settings;
+    }
+
+    @Override
+    public boolean close() {
+        // super.close() lets FilteredItemsSelectionDialog store bounds/history into
+        // the settings; afterwards flush them to disk.
+        boolean closed = super.close();
+        saveDialogSettings();
+        return closed;
+    }
+
+    /**
+     * Loads the shared dialog settings from the plugin state location, or returns
+     * fresh empty settings when none were saved yet.
+     */
+    private static IDialogSettings loadDialogSettings() {
+        DialogSettings settings = new DialogSettings(DIALOG_SETTINGS_ID);
+        Path file = getSettingsFilePath();
+        if (file != null && Files.isRegularFile(file)) {
+            try {
+                settings.load(file.toString());
+            } catch (IOException e) {
+                LOG.warn("Failed to load Open Type dialog settings", e); //$NON-NLS-1$
+            }
+        }
+        return settings;
+    }
+
+    /**
+     * Writes the shared dialog settings to the plugin state location.
+     */
+    private static void saveDialogSettings() {
+        Path file = getSettingsFilePath();
+        if (file != null && dialogSettings instanceof DialogSettings settings) {
+            try {
+                settings.save(file.toString());
+            } catch (IOException e) {
+                LOG.warn("Failed to save Open Type dialog settings", e); //$NON-NLS-1$
+            }
+        }
+    }
+
+    /**
+     * Returns the path of the settings file in the plugin state location, or
+     * {@code null} if the state location cannot be determined.
+     */
+    private static Path getSettingsFilePath() {
+        try {
+            Bundle bundle = FrameworkUtil.getBundle(SubsequenceOpenTypeDialog.class);
+            if (bundle == null) {
+                return null;
+            }
+            return Platform.getStateLocation(bundle).append(SETTINGS_FILE).toFile().toPath();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override

@@ -30,20 +30,27 @@ import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.dom.AST;
 import org.eclipse.jdt.core.dom.ASTParser;
 import org.eclipse.jdt.core.dom.ASTVisitor;
+import org.eclipse.jdt.core.dom.ClassInstanceCreation;
 import org.eclipse.jdt.core.dom.CompilationUnit;
+import org.eclipse.jdt.core.dom.CreationReference;
+import org.eclipse.jdt.core.dom.ExpressionMethodReference;
 import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.MethodInvocation;
+import org.eclipse.jdt.core.dom.SuperMethodInvocation;
+import org.eclipse.jdt.core.dom.SuperMethodReference;
+import org.eclipse.jdt.core.dom.TypeMethodReference;
 
 /**
  * Eclipse command handler that analyzes all Java source files in the workspace
- * to count method call frequencies per declaring type.
+ * to count method and constructor call frequencies per declaring type.
  * <p>
  * The analysis runs as a background {@link Job} with progress reporting. Raw counts
  * are passed to {@link CompletionTracker#setWorkspaceCounts(Map)} which replaces
  * workspace counters and resets user (completion) counters to zero.
  * <p>
- * Triggered from Navigate menu → "Analyze Workspace Method Calls".
+ * Triggered from Navigate menu → "Analyze Workspace Method Calls", or scheduled
+ * automatically on first completion when no workspace data exists yet.
  */
 public class WorkspaceAnalyzer extends AbstractHandler {
 
@@ -51,6 +58,18 @@ public class WorkspaceAnalyzer extends AbstractHandler {
 
     @Override
     public Object execute(ExecutionEvent event) throws ExecutionException {
+        scheduleAnalysis(true);
+        return null;
+    }
+
+    /**
+     * Schedules the workspace analysis as a background {@link Job}.
+     *
+     * @param userInitiated whether the job was requested explicitly by the user
+     *                      (shows the progress dialog) or triggered automatically
+     *                      (runs silently in the background)
+     */
+    public static void scheduleAnalysis(boolean userInitiated) {
         Job job = new Job("Analyzing workspace method calls") { //$NON-NLS-1$
 
             @Override
@@ -70,9 +89,8 @@ public class WorkspaceAnalyzer extends AbstractHandler {
                 }
             }
         };
-        job.setUser(true);
+        job.setUser(userInitiated);
         job.schedule();
-        return null;
     }
 
     /**
@@ -83,7 +101,8 @@ public class WorkspaceAnalyzer extends AbstractHandler {
      * @return map of type name to (method name to invocation count)
      * @throws JavaModelException if workspace traversal fails
      */
-    private Map<String, Map<String, Integer>> analyzeWorkspace(IProgressMonitor monitor) throws JavaModelException {
+    private static Map<String, Map<String, Integer>> analyzeWorkspace(IProgressMonitor monitor)
+            throws JavaModelException {
         Map<String, Map<String, Integer>> counts = new HashMap<>();
         IJavaModel javaModel = JavaCore.create(org.eclipse.core.resources.ResourcesPlugin.getWorkspace().getRoot());
         IJavaProject[] projects = javaModel.getJavaProjects();
@@ -106,7 +125,7 @@ public class WorkspaceAnalyzer extends AbstractHandler {
     /**
      * Analyzes a single Java project, iterating its source package fragment roots.
      */
-    private void analyzeProject(IJavaProject project, Map<String, Map<String, Integer>> counts)
+    private static void analyzeProject(IJavaProject project, Map<String, Map<String, Integer>> counts)
             throws JavaModelException {
         for (IPackageFragmentRoot root : project.getPackageFragmentRoots()) {
             if (root.isArchive() || root.isExternal()) {
@@ -124,7 +143,7 @@ public class WorkspaceAnalyzer extends AbstractHandler {
     /**
      * Analyzes all compilation units in a package fragment.
      */
-    private void analyzePackage(IJavaProject project, IPackageFragment pkg,
+    private static void analyzePackage(IJavaProject project, IPackageFragment pkg,
             Map<String, Map<String, Integer>> counts) throws JavaModelException {
         for (ICompilationUnit cu : pkg.getCompilationUnits()) {
             analyzeCompilationUnit(project, cu, counts);
@@ -134,7 +153,7 @@ public class WorkspaceAnalyzer extends AbstractHandler {
     /**
      * Parses a single compilation unit and visits its method invocations.
      */
-    private void analyzeCompilationUnit(IJavaProject project, ICompilationUnit cu,
+    private static void analyzeCompilationUnit(IJavaProject project, ICompilationUnit cu,
             Map<String, Map<String, Integer>> counts) {
         ASTParser parser = ASTParser.newParser(AST.JLS17);
         parser.setResolveBindings(true);
@@ -147,7 +166,10 @@ public class WorkspaceAnalyzer extends AbstractHandler {
     }
 
     /**
-     * AST visitor that counts method invocations grouped by declaring type.
+     * AST visitor that counts method and constructor invocations grouped by declaring
+     * type: plain and {@code super} method calls, {@code new} expressions, and all
+     * method-reference forms ({@code x::m}, {@code Type::m}, {@code super::m},
+     * {@code Type::new}).
      */
     private static class MethodCallVisitor extends ASTVisitor {
 
@@ -159,28 +181,75 @@ public class WorkspaceAnalyzer extends AbstractHandler {
 
         @Override
         public boolean visit(MethodInvocation node) {
-            IMethodBinding binding = node.resolveMethodBinding();
+            count(node.resolveMethodBinding());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SuperMethodInvocation node) {
+            count(node.resolveMethodBinding());
+            return true;
+        }
+
+        @Override
+        public boolean visit(ClassInstanceCreation node) {
+            count(node.resolveConstructorBinding());
+            return true;
+        }
+
+        @Override
+        public boolean visit(ExpressionMethodReference node) {
+            count(node.resolveMethodBinding());
+            return true;
+        }
+
+        @Override
+        public boolean visit(TypeMethodReference node) {
+            count(node.resolveMethodBinding());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SuperMethodReference node) {
+            count(node.resolveMethodBinding());
+            return true;
+        }
+
+        @Override
+        public boolean visit(CreationReference node) {
+            count(node.resolveMethodBinding());
+            return true;
+        }
+
+        /**
+         * Records one occurrence of the invoked method or constructor under its
+         * declaring type. Methods are keyed {@code "name#paramCount"}, constructors
+         * {@code "<init>#paramCount"} — the same scheme used by the pre-trained
+         * models and the completion tracker.
+         */
+        private void count(IMethodBinding binding) {
             if (binding == null) {
-                return true;
+                return;
             }
 
             ITypeBinding declaringClass = binding.getDeclaringClass();
             if (declaringClass == null) {
-                return true;
+                return;
             }
 
             // Use the erased type to avoid generics noise (HashMap vs HashMap<K,V>)
             ITypeBinding erasure = declaringClass.getErasure();
             String typeName = (erasure != null ? erasure : declaringClass).getQualifiedName();
             if (typeName == null || typeName.isEmpty()) {
-                return true;
+                return; // anonymous and local types have no useful qualified name
             }
 
-            String methodKey = binding.getName() + '#' + binding.getParameterTypes().length;
+            int paramCount = binding.getParameterTypes().length;
+            String methodKey = binding.isConstructor()
+                    ? FrequencyBooster.CTOR_KEY_PREFIX + paramCount
+                    : binding.getName() + '#' + paramCount;
             counts.computeIfAbsent(typeName, k -> new HashMap<>())
                     .merge(methodKey, 1, Integer::sum);
-
-            return true;
         }
     }
 }

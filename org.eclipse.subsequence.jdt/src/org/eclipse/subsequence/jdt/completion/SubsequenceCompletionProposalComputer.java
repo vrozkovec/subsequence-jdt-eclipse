@@ -12,7 +12,6 @@
 package org.eclipse.subsequence.jdt.completion;
 
 import static java.lang.Math.min;
-import static org.eclipse.subsequence.jdt.core.LCSS.containsSubsequence;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -25,6 +24,7 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -51,7 +51,9 @@ import org.eclipse.jface.text.ITextViewer;
 import org.eclipse.jface.text.contentassist.ICompletionProposal;
 import org.eclipse.jface.text.contentassist.IContextInformation;
 import org.eclipse.jface.viewers.StyledString.Styler;
+import org.eclipse.subsequence.jdt.callmodel.CompletionTracker;
 import org.eclipse.subsequence.jdt.callmodel.FrequencyBooster;
+import org.eclipse.subsequence.jdt.callmodel.WorkspaceAnalyzer;
 import org.eclipse.subsequence.jdt.core.LCSS;
 import org.eclipse.subsequence.jdt.preferences.SubsequencePreferences;
 import org.eclipse.swt.graphics.TextStyle;
@@ -72,11 +74,6 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
 
     private static final ILog LOG = Platform.getLog(SubsequenceCompletionProposalComputer.class);
 
-    /**
-     * Use the timeout set by {@code JavaCompletionProposalComputer.JAVA_CODE_ASSIST_TIMEOUT}.
-     */
-    private static final long COMPLETION_TIME_OUT = Long.getLong("org.eclipse.jdt.ui.codeAssistTimeout", 5000); //$NON-NLS-1$
-
     private static final int JAVADOC_TYPE_REF_HIGHLIGHT_ADJUSTMENT = "{@link ".length(); //$NON-NLS-1$
 
     // Negative value ensures subsequence matches have a lower relevance than standard JDT or template proposals
@@ -85,11 +82,12 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
             * (RelevanceConstants.R_EXACT_NAME + RelevanceConstants.R_CASE);
     public static final int CASE_INSENSITIVE_EXACT_MATCH_START = 16 * RelevanceConstants.R_EXACT_NAME;
 
-    private static final int[] EMPTY_SEQUENCE = new int[0];
-
     // MODULE_DECLARATION and MODULE_REF constants (may not exist in older JDT)
     private static final int MODULE_DECLARATION = 28;
     private static final int MODULE_REF = 29;
+
+    /** One-shot guard so the automatic workspace analysis is considered once per session. */
+    private static final AtomicBoolean autoAnalysisTriggered = new AtomicBoolean();
 
     // --- Reflection for JavaContentAssistInvocationContext internals ---
     private static final Field CORE_CONTEXT;
@@ -143,6 +141,8 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
             return Collections.emptyList();
         }
 
+        scheduleWorkspaceAnalysisIfNeeded();
+
         int offset = jdtContext.getInvocationOffset();
         int minPrefixLengthForTypes = SubsequencePreferences.getMinPrefixLengthForTypes();
 
@@ -170,7 +170,7 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
                 length, minPrefixLengthForTypes);
 
         // Step 5: Collect proposals from all trigger locations
-        Map<IJavaCompletionProposal, CompletionProposal> allProposals = new HashMap<>();
+        Map<IJavaCompletionProposal, CandidateInfo> allProposals = new HashMap<>();
         Set<String> sortKeys = new HashSet<>();
 
         for (int trigger : triggerLocations) {
@@ -181,25 +181,55 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
         // Step 6: Wrap proposals with adjusted relevance and highlighting
         List<ICompletionProposal> result = new ArrayList<>();
         Styler boldStyler = getStyler();
+        boolean failureLogged = false;
 
-        for (Entry<IJavaCompletionProposal, CompletionProposal> entry : allProposals.entrySet()) {
+        for (Entry<IJavaCompletionProposal, CandidateInfo> entry : allProposals.entrySet()) {
             IJavaCompletionProposal javaProposal = entry.getKey();
-            CompletionProposal coreProposal = entry.getValue();
+            CandidateInfo info = entry.getValue();
 
-            String completionIdentifier = computeCompletionIdentifier(javaProposal, coreProposal);
-            String matchingArea = CompletionUtils.getPrefixMatchingArea(completionIdentifier);
+            try {
+                int adjustedRelevance = computeRelevance(javaProposal, info.bestSequence(), prefix,
+                        info.matchingArea(), minPrefixLengthForTypes)
+                        + FrequencyBooster.computeFrequencyBoost(info.coreProposal());
+                int highlightAdjustment = computeHighlightAdjustment(javaProposal, info.coreProposal());
 
-            int[] bestSequence = LCSS.bestSubsequence(matchingArea, prefix);
-            int adjustedRelevance = computeRelevance(javaProposal, bestSequence, prefix, matchingArea,
-                    minPrefixLengthForTypes)
-                    + FrequencyBooster.computeFrequencyBoost(coreProposal);
-            int highlightAdjustment = computeHighlightAdjustment(javaProposal, coreProposal);
-
-            result.add(new SubsequenceProposal(javaProposal, adjustedRelevance, bestSequence, boldStyler,
-                    highlightAdjustment, coreProposal, matchingArea));
+                result.add(new SubsequenceProposal(javaProposal, adjustedRelevance, info.bestSequence(), boldStyler,
+                        highlightAdjustment, info.coreProposal(), info.matchingArea()));
+            } catch (Exception e) {
+                // A single malformed proposal must not abort the whole contribution
+                if (!failureLogged) {
+                    LOG.warn("Skipping malformed completion proposal", e); //$NON-NLS-1$
+                    failureLogged = true;
+                }
+            }
         }
 
         return result;
+    }
+
+    /**
+     * Precomputed per-candidate data carried from filtering to wrapping so that the
+     * completion identifier, matching area and best subsequence are computed only
+     * once per proposal.
+     *
+     * @param coreProposal the JDT core proposal ({@code null} for proposals without one)
+     * @param matchingArea the normalized identifier text used for matching
+     * @param bestSequence matched character indices; empty for prefix and empty-prefix matches
+     */
+    private record CandidateInfo(CompletionProposal coreProposal, String matchingArea, int[] bestSequence) {
+    }
+
+    /**
+     * Schedules a background workspace analysis the first time completion runs in a
+     * session that has no workspace frequency data yet (e.g. fresh install or cleared
+     * state), so frequency ranking works without manual setup. The manual command
+     * (Navigate &gt; Analyze Workspace Method Calls) remains available for re-runs.
+     */
+    private static void scheduleWorkspaceAnalysisIfNeeded() {
+        if (autoAnalysisTriggered.compareAndSet(false, true)
+                && !CompletionTracker.getInstance().hasWorkspaceData()) {
+            WorkspaceAnalyzer.scheduleAnalysis(false);
+        }
     }
 
     private SortedSet<Integer> computeTriggerLocations(int offset, ASTNode completionNode,
@@ -255,18 +285,33 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
         }
     }
 
-    private void filterAndInsert(Map<IJavaCompletionProposal, CompletionProposal> baseProposals,
+    private void filterAndInsert(Map<IJavaCompletionProposal, CandidateInfo> baseProposals,
             Set<String> sortKeys, Map<IJavaCompletionProposal, CompletionProposal> newProposals, String prefix) {
+        boolean failureLogged = false;
         for (Entry<IJavaCompletionProposal, CompletionProposal> entry : newProposals.entrySet()) {
             IJavaCompletionProposal javaProposal = entry.getKey();
             CompletionProposal coreProposal = entry.getValue();
 
-            String completionIdentifier = computeCompletionIdentifier(javaProposal, coreProposal);
-            String matchingArea = CompletionUtils.getPrefixMatchingArea(completionIdentifier);
+            try {
+                String completionIdentifier = computeCompletionIdentifier(javaProposal, coreProposal);
+                if (sortKeys.contains(completionIdentifier)) {
+                    continue;
+                }
+                String matchingArea = CompletionUtils.getPrefixMatchingArea(completionIdentifier);
 
-            if (!sortKeys.contains(completionIdentifier) && containsSubsequence(matchingArea, prefix)) {
-                baseProposals.put(javaProposal, coreProposal);
-                sortKeys.add(completionIdentifier);
+                // For a non-empty prefix, a match always yields a sequence of the prefix's
+                // length, so the emptiness test doubles as the contains-subsequence check.
+                int[] bestSequence = LCSS.bestSubsequence(matchingArea, prefix);
+                if (prefix.isEmpty() || bestSequence.length > 0) {
+                    baseProposals.put(javaProposal, new CandidateInfo(coreProposal, matchingArea, bestSequence));
+                    sortKeys.add(completionIdentifier);
+                }
+            } catch (Exception e) {
+                // A single malformed proposal must not abort the whole contribution
+                if (!failureLogged) {
+                    LOG.warn("Skipping malformed completion proposal", e); //$NON-NLS-1$
+                    failureLogged = true;
+                }
             }
         }
     }
@@ -274,37 +319,40 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
     private String computeCompletionIdentifier(IJavaCompletionProposal javaProposal, CompletionProposal coreProposal) {
         if (javaProposal instanceof LazyJavaCompletionProposal && coreProposal != null) {
             return switch (coreProposal.getKind()) {
-                case CompletionProposal.CONSTRUCTOR_INVOCATION -> {
-                    yield new StringBuilder().append(coreProposal.getName()).append(' ')
-                            .append(coreProposal.getSignature()).append(coreProposal.getDeclarationSignature())
-                            .toString();
-                }
-                case CompletionProposal.JAVADOC_TYPE_REF -> {
+                case CompletionProposal.JAVADOC_TYPE_REF, CompletionProposal.TYPE_REF -> {
                     char[] signature = coreProposal.getSignature();
+                    if (signature == null) {
+                        yield javaProposal.getDisplayString();
+                    }
                     char[] simpleName = Signature.getSignatureSimpleName(signature);
                     int indexOf = CharOperation.lastIndexOf('.', simpleName);
                     simpleName = CharOperation.subarray(simpleName, indexOf + 1, simpleName.length);
-                    yield new StringBuilder().append(simpleName).append(' ').append(signature)
-                            .append(" javadoc").toString(); //$NON-NLS-1$
+                    StringBuilder sb = new StringBuilder().append(simpleName).append(' ').append(signature);
+                    if (coreProposal.getKind() == CompletionProposal.JAVADOC_TYPE_REF) {
+                        sb.append(" javadoc"); //$NON-NLS-1$
+                    }
+                    yield sb.toString();
                 }
-                case CompletionProposal.TYPE_REF -> {
+                case CompletionProposal.PACKAGE_REF -> {
+                    char[] declarationSignature = coreProposal.getDeclarationSignature();
+                    yield declarationSignature != null ? new String(declarationSignature)
+                            : javaProposal.getDisplayString();
+                }
+                case CompletionProposal.CONSTRUCTOR_INVOCATION, CompletionProposal.METHOD_REF,
+                        CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER, CompletionProposal.METHOD_NAME_REFERENCE,
+                        CompletionProposal.JAVADOC_METHOD_REF -> {
+                    char[] name = coreProposal.getName();
                     char[] signature = coreProposal.getSignature();
-                    char[] simpleName = Signature.getSignatureSimpleName(signature);
-                    int indexOf = CharOperation.lastIndexOf('.', simpleName);
-                    simpleName = CharOperation.subarray(simpleName, indexOf + 1, simpleName.length);
-                    yield new StringBuilder().append(simpleName).append(' ').append(signature).toString();
-                }
-                case CompletionProposal.PACKAGE_REF -> new String(coreProposal.getDeclarationSignature());
-                case CompletionProposal.METHOD_REF, CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER,
-                        CompletionProposal.METHOD_NAME_REFERENCE -> {
-                    yield new StringBuilder().append(coreProposal.getName()).append(' ')
-                            .append(coreProposal.getSignature()).append(coreProposal.getDeclarationSignature())
-                            .toString();
-                }
-                case CompletionProposal.JAVADOC_METHOD_REF -> {
-                    yield new StringBuilder().append(coreProposal.getName()).append(' ')
-                            .append(coreProposal.getSignature()).append(coreProposal.getDeclarationSignature())
-                            .append(" javadoc").toString(); //$NON-NLS-1$
+                    char[] declarationSignature = coreProposal.getDeclarationSignature();
+                    if (name == null || signature == null || declarationSignature == null) {
+                        yield javaProposal.getDisplayString();
+                    }
+                    StringBuilder sb = new StringBuilder().append(name).append(' ').append(signature)
+                            .append(declarationSignature);
+                    if (coreProposal.getKind() == CompletionProposal.JAVADOC_METHOD_REF) {
+                        sb.append(" javadoc"); //$NON-NLS-1$
+                    }
+                    yield sb.toString();
                 }
                 case CompletionProposal.JAVADOC_PARAM_REF, CompletionProposal.JAVADOC_BLOCK_TAG,
                         CompletionProposal.JAVADOC_INLINE_TAG, MODULE_DECLARATION, MODULE_REF ->

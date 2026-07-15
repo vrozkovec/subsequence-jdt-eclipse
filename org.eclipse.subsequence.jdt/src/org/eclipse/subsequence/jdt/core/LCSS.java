@@ -57,7 +57,7 @@ public final class LCSS {
      * Finds all possible subsequence matches of {@code token} within {@code completion}.
      */
     public static List<int[]> findSequences(String completion, String token) {
-        return new SequenceFinder(completion, token).findSeqeuences();
+        return new SequenceFinder(completion, token).findSequences();
     }
 
     /**

@@ -49,6 +49,16 @@ public final class CompletionTracker {
 	private final AtomicInteger acceptanceCounter = new AtomicInteger(0);
 
 	/**
+	 * Memoized result of {@link #getNormalizedData()} — rebuilt lazily after every
+	 * data change. Completion looks this map up once per proposal, so recomputing
+	 * it on each call would be O(all tracked data × proposals) per keystroke.
+	 */
+	private volatile Map<String, Map<String, Double>> normalizedCache;
+
+	/** Whether any workspace-analysis counts are present (loaded or set this session). */
+	private volatile boolean workspaceDataPresent;
+
+	/**
 	 * Dual counters for a single (type, method) pair.
 	 *
 	 * @param workspace count from workspace analysis
@@ -116,15 +126,13 @@ public final class CompletionTracker {
 			data.computeIfAbsent(typeName, k -> new ConcurrentHashMap<>())
 					.computeIfAbsent(methodName, k -> MethodCounts.ofUser(0))
 					.user().incrementAndGet();
-
-			DiagnosticLog.log("[CompletionTracker] recorded: " + typeName + "." + methodName); //$NON-NLS-1$ //$NON-NLS-2$
+			normalizedCache = null;
 
 			if (acceptanceCounter.incrementAndGet() % SAVE_INTERVAL == 0) {
 				saveToDisk();
 			}
 		} catch (Exception e) {
 			// must never break completion
-			DiagnosticLog.log("[CompletionTracker] error recording: " + e.getMessage()); //$NON-NLS-1$
 		}
 	}
 
@@ -154,19 +162,27 @@ public final class CompletionTracker {
 			// Atomically replace
 			data.clear();
 			data.putAll(newData);
+			normalizedCache = null;
+			workspaceDataPresent = !newData.isEmpty();
 
 			saveToDisk();
 
 			// Invalidate the type-name reverse index so it rebuilds with the new data
-			CallModelIndex idx = CallModelIndex.getInstance();
-			if (idx != null) {
-				idx.invalidateSimpleNameIndex();
-			}
-
-			DiagnosticLog.log("[CompletionTracker] setWorkspaceCounts: " + data.size() + " types"); //$NON-NLS-1$ //$NON-NLS-2$
+			CallModelIndex.getInstance().invalidateSimpleNameIndex();
 		} catch (Exception e) {
-			DiagnosticLog.log("[CompletionTracker] error setWorkspaceCounts: " + e.getMessage()); //$NON-NLS-1$
+			LOG.warn("Failed to apply workspace analysis counts", e); //$NON-NLS-1$
 		}
+	}
+
+	/**
+	 * Returns whether any workspace-analysis counts are present — either loaded from
+	 * a previous session or produced by an analysis run in this session. Used to
+	 * decide whether an automatic background analysis should be scheduled.
+	 *
+	 * @return {@code true} if workspace counts exist
+	 */
+	public boolean hasWorkspaceData() {
+		return workspaceDataPresent;
 	}
 
 	/**
@@ -178,6 +194,11 @@ public final class CompletionTracker {
 	 * @return map of type name to (method name to probability), never {@code null}
 	 */
 	public Map<String, Map<String, Double>> getNormalizedData() {
+		Map<String, Map<String, Double>> cached = normalizedCache;
+		if (cached != null) {
+			return cached;
+		}
+
 		try {
 			Map<String, Map<String, Double>> result = new HashMap<>();
 
@@ -199,9 +220,9 @@ public final class CompletionTracker {
 				result.put(typeEntry.getKey(), normalized);
 			}
 
+			normalizedCache = result;
 			return result;
 		} catch (Exception e) {
-			DiagnosticLog.log("[CompletionTracker] error normalizing: " + e.getMessage()); //$NON-NLS-1$
 			return Collections.emptyMap();
 		}
 	}
@@ -244,6 +265,10 @@ public final class CompletionTracker {
 					}
 				}
 			}
+
+			workspaceDataPresent = data.values().stream()
+					.flatMap(methods -> methods.values().stream())
+					.anyMatch(counts -> counts.workspace().get() > 0);
 
 			LOG.info("Loaded completion data: " + data.size() + " types"); //$NON-NLS-1$ //$NON-NLS-2$
 		} catch (Exception e) {
@@ -425,8 +450,6 @@ public final class CompletionTracker {
 			try (BufferedWriter writer = Files.newBufferedWriter(file)) {
 				writeDualCounterJson(writer);
 			}
-
-			DiagnosticLog.log("[CompletionTracker] saved " + data.size() + " types to disk"); //$NON-NLS-1$ //$NON-NLS-2$
 		} catch (IOException e) {
 			LOG.warn("Failed to save completion data", e); //$NON-NLS-1$
 		}

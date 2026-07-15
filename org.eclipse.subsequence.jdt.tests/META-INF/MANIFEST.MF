@@ -1,0 +1,8 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: Subsequence Matching for JDT Tests
+Bundle-SymbolicName: org.eclipse.subsequence.jdt.tests
+Bundle-Version: 1.0.0.qualifier
+Fragment-Host: org.eclipse.subsequence.jdt;bundle-version="1.0.0"
+Bundle-RequiredExecutionEnvironment: JavaSE-17
+Require-Bundle: junit-jupiter-api

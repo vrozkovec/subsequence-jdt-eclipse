@@ -26,6 +26,9 @@ public final class FrequencyBooster {
     /** Maximum relevance boost applied based on call frequency. */
     static final int MAX_FREQUENCY_BOOST = 200;
 
+    /** Key prefix for constructor entries in user data: {@code "<init>#" + paramCount}. */
+    static final String CTOR_KEY_PREFIX = "<init>#"; //$NON-NLS-1$
+
     private FrequencyBooster() {
         // Not meant to be instantiated
     }
@@ -58,17 +61,7 @@ public final class FrequencyBooster {
      * Computes boost for method proposals (instance and static) using call and statics models.
      */
     private static int computeMethodBoost(CompletionProposal coreProposal) {
-        CallModelIndex index = CallModelIndex.getInstance();
-        if (index == null) {
-            DiagnosticLog.log("[methodBoost] index is NULL"); //$NON-NLS-1$
-            return 0;
-        }
-
         String typeName = extractTypeName(coreProposal);
-        DiagnosticLog.log("[methodBoost] kind=" + coreProposal.getKind() //$NON-NLS-1$
-                + " declSig=" + charArrayToString(coreProposal.getDeclarationSignature()) //$NON-NLS-1$
-                + " typeName=" + typeName //$NON-NLS-1$
-                + " name=" + charArrayToString(coreProposal.getName())); //$NON-NLS-1$
         if (typeName == null) {
             return 0;
         }
@@ -76,18 +69,19 @@ public final class FrequencyBooster {
         // Skip java.lang.Object methods — they are inherited by every type and should
         // not receive any frequency boost, keeping them at the bottom of the list.
         if ("java.lang.Object".equals(typeName)) { //$NON-NLS-1$
-            DiagnosticLog.log("[methodBoost] skip Object method: " //$NON-NLS-1$
-                    + charArrayToString(coreProposal.getName()));
             return 0;
         }
 
-        Map<String, Double> probs = index.getMethodProbabilities(typeName);
+        Map<String, Double> probs = CallModelIndex.getInstance().getMethodProbabilities(typeName);
         if (probs.isEmpty()) {
-            DiagnosticLog.log("[methodBoost] no probs for " + typeName); //$NON-NLS-1$
             return 0;
         }
 
-        String methodName = new String(coreProposal.getName());
+        char[] nameChars = coreProposal.getName();
+        if (nameChars == null) {
+            return 0;
+        }
+        String methodName = new String(nameChars);
 
         // Try composite key (overload-aware) first, then fall back to plain method name
         String compositeKey = buildCompositeKey(methodName, coreProposal);
@@ -95,43 +89,24 @@ public final class FrequencyBooster {
         if (probability == null) {
             probability = probs.get(methodName);
         }
-
-        int boost = probability != null ? (int) (probability * MAX_FREQUENCY_BOOST) : 0;
-        DiagnosticLog.log("[methodBoost] method='" + methodName + "' key=" + compositeKey //$NON-NLS-1$ //$NON-NLS-2$
-                + " prob=" + probability + " boost=" + boost); //$NON-NLS-1$ //$NON-NLS-2$
         if (probability == null) {
             return 0;
         }
 
-        return boost;
+        return (int) (probability * MAX_FREQUENCY_BOOST);
     }
 
     /**
-     * Null-safe conversion of a char array to a string for diagnostic logging.
-     */
-    private static String charArrayToString(char[] chars) {
-        return chars != null ? new String(chars) : "null"; //$NON-NLS-1$
-    }
-
-    /**
-     * Computes boost for constructor proposals using the ctor model.
+     * Computes boost for constructor proposals using the ctor model and user data.
      * <p>
-     * Matches by parameter signature extracted from the proposal's {@code getSignature()},
-     * which returns strings like {@code "(I)V"} or {@code "(Ljava/util/Map;)V"}.
+     * Pre-trained data is matched by parameter signature from the proposal's
+     * {@code getSignature()}; user data (workspace analysis + accepted completions)
+     * is keyed {@code "<init>#paramCount"} in the type's method map. The higher
+     * probability wins.
      */
     private static int computeConstructorBoost(CompletionProposal coreProposal) {
-        CallModelIndex index = CallModelIndex.getInstance();
-        if (index == null) {
-            return 0;
-        }
-
         String typeName = extractTypeName(coreProposal);
         if (typeName == null) {
-            return 0;
-        }
-
-        Map<String, Double> probs = index.getConstructorProbabilities(typeName);
-        if (probs.isEmpty()) {
             return 0;
         }
 
@@ -139,36 +114,49 @@ public final class FrequencyBooster {
         if (sig == null || sig.length == 0) {
             return 0;
         }
-
-        // The signature from CompletionProposal uses readable type names like
-        // "(QMap;)V" or "(QString;I)V" — we need to match against the model's
-        // JVM-style signatures like "(Ljava/util/Map;)V".
-        // Try exact match first, then fall back to matching by parameter count.
         String proposalSig = new String(sig);
-        Double probability = probs.get(proposalSig);
-        if (probability != null) {
-            return (int) (probability * MAX_FREQUENCY_BOOST);
+
+        int proposalParamCount;
+        try {
+            proposalParamCount = Signature.getParameterCount(proposalSig);
+        } catch (IllegalArgumentException e) {
+            return 0;
         }
 
-        // Fall back: match by parameter count
-        int proposalParamCount = Signature.getParameterCount(proposalSig);
-        Double bestMatch = null;
-        for (var entry : probs.entrySet()) {
-            try {
-                if (Signature.getParameterCount(entry.getKey()) == proposalParamCount) {
-                    if (bestMatch == null || entry.getValue() > bestMatch) {
-                        bestMatch = entry.getValue();
+        CallModelIndex index = CallModelIndex.getInstance();
+        double probability = 0.0;
+
+        Map<String, Double> probs = index.getConstructorProbabilities(typeName);
+        if (!probs.isEmpty()) {
+            // The signature from CompletionProposal uses readable type names like
+            // "(QMap;)V" or "(QString;I)V" — the model stores JVM-style signatures
+            // like "(Ljava/util/Map;)V". Try exact match first, then fall back to
+            // matching by parameter count.
+            Double exact = probs.get(proposalSig);
+            if (exact != null) {
+                probability = exact;
+            } else {
+                for (var entry : probs.entrySet()) {
+                    try {
+                        if (Signature.getParameterCount(entry.getKey()) == proposalParamCount
+                                && entry.getValue() > probability) {
+                            probability = entry.getValue();
+                        }
+                    } catch (IllegalArgumentException e) {
+                        // skip malformed signatures in the model
                     }
                 }
-            } catch (IllegalArgumentException e) {
-                // skip malformed signatures in the model
             }
         }
 
-        if (bestMatch != null) {
-            return (int) (bestMatch * MAX_FREQUENCY_BOOST);
+        // User data (workspace analysis + accepted completions), keyed "<init>#paramCount"
+        Double userProbability = index.getMethodProbabilities(typeName)
+                .get(CTOR_KEY_PREFIX + proposalParamCount);
+        if (userProbability != null && userProbability > probability) {
+            probability = userProbability;
         }
-        return 0;
+
+        return (int) (probability * MAX_FREQUENCY_BOOST);
     }
 
     /**
@@ -190,12 +178,29 @@ public final class FrequencyBooster {
     }
 
     /**
-     * Builds a composite key from the given method name and proposal.
+     * Builds the tracker key for an accepted proposal: {@code "methodName#paramCount"}
+     * for methods, {@code "<init>#paramCount"} for constructors.
      *
-     * @return the composite key, or just the method name if param count cannot be determined
+     * @return the key; for methods without a resolvable signature the plain method
+     *         name; {@code null} if no key can be determined
      */
     public static String buildMethodKey(CompletionProposal proposal) {
-        String methodName = new String(proposal.getName());
+        if (proposal.getKind() == CompletionProposal.CONSTRUCTOR_INVOCATION) {
+            char[] sig = proposal.getSignature();
+            if (sig == null || sig.length == 0) {
+                return null;
+            }
+            try {
+                return CTOR_KEY_PREFIX + Signature.getParameterCount(new String(sig));
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+        }
+        char[] nameChars = proposal.getName();
+        if (nameChars == null) {
+            return null;
+        }
+        String methodName = new String(nameChars);
         String composite = buildCompositeKey(methodName, proposal);
         return composite != null ? composite : methodName;
     }

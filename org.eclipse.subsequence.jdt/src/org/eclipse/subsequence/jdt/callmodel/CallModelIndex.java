@@ -100,24 +100,23 @@ public final class CallModelIndex {
      * Core lookup for a fully qualified type name.
      */
     private Map<String, Double> getMethodProbabilitiesForQualified(String qualifiedTypeName) {
-        DiagnosticLog.log("[getMethodProbs] type='" + qualifiedTypeName //$NON-NLS-1$
-                + "' callZip=" + callZipPath + " staticsZip=" + staticsZipPath); //$NON-NLS-1$ //$NON-NLS-2$
-
-        // Source 1: Pre-trained model data (call ZIP then statics ZIP)
-        Map<String, Double> modelProbs = loadFromJbifZip(qualifiedTypeName, callZipPath, callCache, missingCallTypes);
-        if (modelProbs.isEmpty()) {
-            modelProbs = loadFromJbifZip(qualifiedTypeName, staticsZipPath, staticsCache, missingStaticsTypes);
-        }
+        // Source 1: Pre-trained model data. Instance (call ZIP) and static (statics ZIP)
+        // methods are independent models — merge them so a type present in both exposes
+        // both its instance and its static methods.
+        Map<String, Double> callProbs = loadFromJbifZip(qualifiedTypeName, callZipPath, callCache, missingCallTypes);
+        Map<String, Double> staticsProbs = loadFromJbifZip(qualifiedTypeName, staticsZipPath, staticsCache,
+                missingStaticsTypes);
+        Map<String, Double> modelProbs = mergeMax(callProbs, staticsProbs);
         if (!modelProbs.isEmpty()) {
             indexSimpleName(qualifiedTypeName);
         }
 
         // Source 2: User data (unified workspace + completion tracker)
-        Map<String, Double> userProbs = null;
+        Map<String, Double> userProbs = Collections.emptyMap();
         try {
-            Map<String, Map<String, Double>> userData = CompletionTracker.getInstance().getNormalizedData();
-            userProbs = userData.get(qualifiedTypeName);
-            if (userProbs != null && !userProbs.isEmpty()) {
+            Map<String, Double> tracked = CompletionTracker.getInstance().getNormalizedData().get(qualifiedTypeName);
+            if (tracked != null && !tracked.isEmpty()) {
+                userProbs = tracked;
                 indexSimpleName(qualifiedTypeName);
             }
         } catch (Exception e) {
@@ -125,32 +124,30 @@ public final class CallModelIndex {
         }
 
         // Merge both sources — max probability per method wins
-        boolean hasModel = !modelProbs.isEmpty();
-        boolean hasUser = userProbs != null && !userProbs.isEmpty();
+        return mergeMax(modelProbs, userProbs);
+    }
 
-        if (!hasModel && !hasUser) {
-            DiagnosticLog.log("[getMethodProbs] no data from any source"); //$NON-NLS-1$
-            return Collections.emptyMap();
+    /**
+     * Merges two probability maps, taking the higher probability per key.
+     * <p>
+     * When one map is empty the other is returned directly (callers treat results
+     * as read-only), avoiding an allocation on the completion hot path.
+     *
+     * @param a the first map
+     * @param b the second map
+     * @return the merged map, never {@code null}
+     */
+    static Map<String, Double> mergeMax(Map<String, Double> a, Map<String, Double> b) {
+        if (b.isEmpty()) {
+            return a;
         }
-
-        // Fast path: only one source has data
-        if (!hasUser) {
-            DiagnosticLog.log("[getMethodProbs] model only, size=" + modelProbs.size()); //$NON-NLS-1$
-            return modelProbs;
+        if (a.isEmpty()) {
+            return b;
         }
-        if (!hasModel) {
-            DiagnosticLog.log("[getMethodProbs] user data only, size=" + userProbs.size()); //$NON-NLS-1$
-            return userProbs;
-        }
-
-        // Both sources — merge, taking the higher probability per method
-        Map<String, Double> merged = new HashMap<>(modelProbs);
-        for (var entry : userProbs.entrySet()) {
+        Map<String, Double> merged = new HashMap<>(a);
+        for (var entry : b.entrySet()) {
             merged.merge(entry.getKey(), entry.getValue(), Math::max);
         }
-        DiagnosticLog.log("[getMethodProbs] merged sources: model=" + modelProbs.size() //$NON-NLS-1$
-                + " user=" + userProbs.size() //$NON-NLS-1$
-                + " total=" + merged.size()); //$NON-NLS-1$
         return merged;
     }
 
@@ -162,14 +159,11 @@ public final class CallModelIndex {
 
         Set<String> candidates = simpleNameIndex.get(simpleName);
         if (candidates == null || candidates.isEmpty()) {
-            DiagnosticLog.log("[getMethodProbs] no resolution for simple name: " + simpleName); //$NON-NLS-1$
             return Collections.emptyMap();
         }
 
         if (candidates.size() == 1) {
-            String resolved = candidates.iterator().next();
-            DiagnosticLog.log("[getMethodProbs] resolved '" + simpleName + "' -> '" + resolved + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            return getMethodProbabilitiesForQualified(resolved);
+            return getMethodProbabilitiesForQualified(candidates.iterator().next());
         }
 
         // Ambiguous: merge results from all candidates
@@ -179,8 +173,6 @@ public final class CallModelIndex {
                 merged.merge(entry.getKey(), entry.getValue(), Math::max);
             }
         }
-        DiagnosticLog.log("[getMethodProbs] resolved '" + simpleName + "' -> " //$NON-NLS-1$ //$NON-NLS-2$
-                + candidates.size() + " candidates, merged=" + merged.size()); //$NON-NLS-1$
         return merged;
     }
 
@@ -254,11 +246,27 @@ public final class CallModelIndex {
             return Collections.emptyMap();
         }
 
-        return ctorCache.computeIfAbsent(qualifiedTypeName, this::loadFromCtorZip);
+        Map<String, Double> cached = ctorCache.get(qualifiedTypeName);
+        if (cached != null) {
+            return cached;
+        }
+
+        // Parse outside the map lock — a concurrent duplicate parse is harmless.
+        Map<String, Double> parsed = loadFromCtorZip(qualifiedTypeName);
+        if (parsed.isEmpty()) {
+            missingCtorTypes.add(qualifiedTypeName);
+            return Collections.emptyMap();
+        }
+        Map<String, Double> previous = ctorCache.putIfAbsent(qualifiedTypeName, parsed);
+        return previous != null ? previous : parsed;
     }
 
     /**
      * Loads and parses a JBIF model from a ZIP archive for the given type.
+     * <p>
+     * Successful non-empty results are cached in {@code cache}; types without an
+     * entry (or failing to parse) are remembered in {@code missingTypes} only, so
+     * the positive cache holds no empty maps.
      */
     private static Map<String, Double> loadFromJbifZip(String qualifiedTypeName, Path zipPath,
             ConcurrentHashMap<String, Map<String, Double>> cache, Set<String> missingTypes) {
@@ -266,29 +274,48 @@ public final class CallModelIndex {
             return Collections.emptyMap();
         }
 
-        return cache.computeIfAbsent(qualifiedTypeName, typeName -> {
-            String entryPath = typeName.replace('.', '/') + ".jbif"; //$NON-NLS-1$
+        Map<String, Double> cached = cache.get(qualifiedTypeName);
+        if (cached != null) {
+            return cached;
+        }
 
-            try (ZipFile zf = new ZipFile(zipPath.toFile())) {
-                ZipEntry entry = zf.getEntry(entryPath);
-                if (entry == null) {
-                    missingTypes.add(typeName);
-                    return Collections.emptyMap();
-                }
+        // Parse outside the map lock — a concurrent duplicate parse is harmless.
+        Map<String, Double> parsed = parseJbifEntry(qualifiedTypeName, zipPath);
+        if (parsed.isEmpty()) {
+            missingTypes.add(qualifiedTypeName);
+            return Collections.emptyMap();
+        }
+        Map<String, Double> previous = cache.putIfAbsent(qualifiedTypeName, parsed);
+        return previous != null ? previous : parsed;
+    }
 
-                try (InputStream is = zf.getInputStream(entry)) {
-                    return JbifParser.parse(is);
-                }
-            } catch (Exception e) {
-                LOG.warn("Failed to load JBIF model for " + typeName + " from " + zipPath, e); //$NON-NLS-1$ //$NON-NLS-2$
-                missingTypes.add(typeName);
+    /**
+     * Reads and parses the JBIF entry for the given type from the given ZIP.
+     *
+     * @return the parsed probabilities, or an empty map if the entry is missing or unreadable
+     */
+    private static Map<String, Double> parseJbifEntry(String qualifiedTypeName, Path zipPath) {
+        String entryPath = qualifiedTypeName.replace('.', '/') + ".jbif"; //$NON-NLS-1$
+
+        try (ZipFile zf = new ZipFile(zipPath.toFile())) {
+            ZipEntry entry = zf.getEntry(entryPath);
+            if (entry == null) {
                 return Collections.emptyMap();
             }
-        });
+
+            try (InputStream is = zf.getInputStream(entry)) {
+                return JbifParser.parse(is);
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to load JBIF model for " + qualifiedTypeName + " from " + zipPath, e); //$NON-NLS-1$ //$NON-NLS-2$
+            return Collections.emptyMap();
+        }
     }
 
     /**
      * Loads and parses a constructor model from the ctor ZIP archive for the given type.
+     *
+     * @return the parsed probabilities, or an empty map if the entry is missing or unreadable
      */
     private Map<String, Double> loadFromCtorZip(String qualifiedTypeName) {
         String entryPath = qualifiedTypeName.replace('.', '/') + ".json"; //$NON-NLS-1$
@@ -296,7 +323,6 @@ public final class CallModelIndex {
         try (ZipFile zf = new ZipFile(ctorZipPath.toFile())) {
             ZipEntry entry = zf.getEntry(entryPath);
             if (entry == null) {
-                missingCtorTypes.add(qualifiedTypeName);
                 return Collections.emptyMap();
             }
 
@@ -305,7 +331,6 @@ public final class CallModelIndex {
             }
         } catch (Exception e) {
             LOG.warn("Failed to load ctor model for " + qualifiedTypeName, e); //$NON-NLS-1$
-            missingCtorTypes.add(qualifiedTypeName);
             return Collections.emptyMap();
         }
     }
@@ -361,15 +386,12 @@ public final class CallModelIndex {
      */
     private static CallModelIndex createFromModelDir() {
         String dirStr = SubsequencePreferences.getModelDirPath();
-        DiagnosticLog.log("[createFromModelDir] prefValue='" + dirStr + "'"); //$NON-NLS-1$ //$NON-NLS-2$
         if (dirStr == null || dirStr.isBlank()) {
-            DiagnosticLog.log("[createFromModelDir] EMPTY — returning null index"); //$NON-NLS-1$
             return new CallModelIndex(null, null, null);
         }
 
         Path dir = Path.of(dirStr);
         if (!Files.isDirectory(dir)) {
-            DiagnosticLog.log("[createFromModelDir] NOT A DIRECTORY: " + dirStr); //$NON-NLS-1$
             LOG.warn("Model directory does not exist: " + dirStr); //$NON-NLS-1$
             return new CallModelIndex(null, null, null);
         }
@@ -377,10 +399,6 @@ public final class CallModelIndex {
         Path callZip = findZipBySuffix(dir, "-call.zip"); //$NON-NLS-1$
         Path staticsZip = findZipBySuffix(dir, "-statics.zip"); //$NON-NLS-1$
         Path ctorZip = findZipBySuffix(dir, "-ctor.zip"); //$NON-NLS-1$
-
-        DiagnosticLog.log("[createFromModelDir] call=" + callZip //$NON-NLS-1$
-                + " | statics=" + staticsZip //$NON-NLS-1$
-                + " | ctor=" + ctorZip); //$NON-NLS-1$
 
         LOG.info("Model directory: " + dir //$NON-NLS-1$
                 + " | call=" + (callZip != null ? callZip.getFileName() : "none") //$NON-NLS-1$ //$NON-NLS-2$
@@ -416,6 +434,46 @@ public final class CallModelIndex {
      */
     public static void reset() {
         instance = null;
+    }
+
+    /**
+     * Returns a short human-readable status of the given model directory for display
+     * in the preference UI: which model ZIPs were found, or why none are used.
+     *
+     * @param dirStr the configured model directory path (may be {@code null} or blank)
+     * @return a one-line status, never {@code null}
+     */
+    public static String describeModelDir(String dirStr) {
+        if (dirStr == null || dirStr.isBlank()) {
+            return "No model directory configured — frequency ranking uses workspace data only.";
+        }
+
+        Path dir;
+        try {
+            dir = Path.of(dirStr);
+        } catch (java.nio.file.InvalidPathException e) {
+            return "Invalid directory path.";
+        }
+        if (!Files.isDirectory(dir)) {
+            return "Directory does not exist — frequency ranking uses workspace data only.";
+        }
+
+        Path callZip = findZipBySuffix(dir, "-call.zip"); //$NON-NLS-1$
+        Path staticsZip = findZipBySuffix(dir, "-statics.zip"); //$NON-NLS-1$
+        Path ctorZip = findZipBySuffix(dir, "-ctor.zip"); //$NON-NLS-1$
+
+        if (callZip == null && staticsZip == null && ctorZip == null) {
+            return "No model ZIPs found (expected *-call.zip, *-statics.zip, *-ctor.zip).";
+        }
+        return "Models found — call: " + zipName(callZip) + ", statics: " + zipName(staticsZip)
+                + ", ctor: " + zipName(ctorZip);
+    }
+
+    /**
+     * Returns the file name of the given ZIP path, or {@code "none"} when absent.
+     */
+    private static String zipName(Path zip) {
+        return zip != null ? zip.getFileName().toString() : "none";
     }
 
     // --- Minimal JSON serialization (no external dependencies) ---

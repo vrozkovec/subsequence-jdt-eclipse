@@ -28,12 +28,14 @@ public final class SubsequencePreferences {
     /** Preference key for the path to the model directory containing ZIP archives. */
     public static final String PREF_MODEL_DIR_PATH = "subwords_model_dir_path"; //$NON-NLS-1$
 
+    /** Shared store — the getters run on the completion hot path, once per keystroke. */
+    private static final ScopedPreferenceStore STORE = new ScopedPreferenceStore(InstanceScope.INSTANCE, PLUGIN_ID);
+
     /**
      * Returns the current minimum prefix length for types from the preference store.
      */
     public static int getMinPrefixLengthForTypes() {
-        ScopedPreferenceStore store = new ScopedPreferenceStore(InstanceScope.INSTANCE, PLUGIN_ID);
-        int value = store.getInt(PREF_MIN_PREFIX_LENGTH_FOR_TYPES);
+        int value = STORE.getInt(PREF_MIN_PREFIX_LENGTH_FOR_TYPES);
         return value > 0 ? value : 2;
     }
 
@@ -41,7 +43,6 @@ public final class SubsequencePreferences {
      * Returns the configured path to the model directory, or an empty string if not set.
      */
     public static String getModelDirPath() {
-        ScopedPreferenceStore store = new ScopedPreferenceStore(InstanceScope.INSTANCE, PLUGIN_ID);
-        return store.getString(PREF_MODEL_DIR_PATH);
+        return STORE.getString(PREF_MODEL_DIR_PATH);
     }
 }

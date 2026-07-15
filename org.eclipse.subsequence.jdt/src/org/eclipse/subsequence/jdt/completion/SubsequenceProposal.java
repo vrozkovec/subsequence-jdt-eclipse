@@ -441,8 +441,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
             // Resolve unqualified type names via the reverse index
             if (typeName.indexOf('.') < 0) {
-                CallModelIndex idx = CallModelIndex.getInstance();
-                String resolved = idx != null ? idx.resolveSimpleName(typeName) : null;
+                String resolved = CallModelIndex.getInstance().resolveSimpleName(typeName);
                 if (resolved == null) {
                     return;
                 }
