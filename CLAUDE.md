@@ -50,6 +50,7 @@ ZIP entries use raw type names as paths (e.g., `java/util/HashMap.jbif`), no gen
 - **Object method demotion**: methods declared on `java.lang.Object` get zero frequency boost to keep them at the bottom of completion lists
 - **Workspace analysis**: manual via Navigate > Analyze Workspace Method Calls, plus one automatic background run on first completion when no workspace data exists; re-analysis replaces workspace counts and resets acceptance counts (the scan already includes previously accepted completions)
 - **Hot-path discipline**: no file I/O during completion (frequency data is cached, `CompletionTracker.getNormalizedData()` is memoized), and LCSS matching runs once per proposal with a cheap in-order pre-check before full enumeration
+- **Name-only completion before an existing `(`**: method/constructor proposals never synthesize an argument list when the completed identifier is directly followed by `(` (e.g. `deleteAll|(Foo.class)` keeps its arguments); `SubsequenceProposal` strips a trailing `()` from the core completion and forces the delegate's overwrite decision (`fToggleEating`, via reflection) because JDT's insert mode always appends an argument list and newer JDT core parsers report a range up to the statement end, which keeps the parentheses even in overwrite mode
 
 ## Ancestry
 

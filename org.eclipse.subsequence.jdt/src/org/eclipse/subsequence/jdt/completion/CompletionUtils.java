@@ -12,8 +12,12 @@ package org.eclipse.subsequence.jdt.completion;
 
 import static java.lang.Character.isJavaIdentifierPart;
 
+import org.eclipse.jface.text.BadLocationException;
+import org.eclipse.jface.text.IDocument;
+
 /**
- * Utility methods for extracting the prefix-matching area from completion display strings.
+ * Utility methods for extracting the prefix-matching area from completion display strings and
+ * for inspecting the document text around a completion offset.
  * <p>
  * Extracted from the original {@code CompletionContexts} class in Eclipse Recommenders.
  */
@@ -54,6 +58,40 @@ public final class CompletionUtils {
             }
         }
         return displayString.substring(0, end);
+    }
+
+    /**
+     * Returns the end offset (exclusive) of the Java identifier that continues at {@code offset},
+     * i.e. the first offset at or after {@code offset} whose character is not a Java identifier
+     * part. Returns {@code offset} itself when no identifier character follows it.
+     */
+    public static int findIdentifierEnd(IDocument document, int offset) {
+        int end = offset;
+        try {
+            while (end < document.getLength() && isJavaIdentifierPart(document.getChar(end))) {
+                end++;
+            }
+        } catch (BadLocationException e) {
+            return offset;
+        }
+        return end;
+    }
+
+    /**
+     * Returns whether the Java identifier continuing at {@code offset} is immediately followed by
+     * an opening parenthesis, e.g. {@code deleteAll|(x)} or {@code deleteAl|lJoin(x)}.
+     * <p>
+     * Whitespace between the identifier and the parenthesis is deliberately not skipped; this
+     * mirrors the check JDT core uses to decide whether a method completion needs its own
+     * parentheses.
+     */
+    public static boolean parenFollowsIdentifier(IDocument document, int offset) {
+        int end = findIdentifierEnd(document, offset);
+        try {
+            return end < document.getLength() && document.getChar(end) == '(';
+        } catch (BadLocationException e) {
+            return false;
+        }
     }
 
     private static String stripHtmlTagDelimiters(String string) {

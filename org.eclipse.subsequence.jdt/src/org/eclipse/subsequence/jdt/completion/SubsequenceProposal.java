@@ -8,10 +8,12 @@
 package org.eclipse.subsequence.jdt.completion;
 
 import java.lang.reflect.Field;
+import java.util.Arrays;
 
 import org.eclipse.jdt.core.CompletionProposal;
 import org.eclipse.jdt.internal.ui.JavaPlugin;
 import org.eclipse.jdt.internal.ui.text.java.AbstractJavaCompletionProposal;
+import org.eclipse.jdt.internal.ui.text.java.JavaMethodCompletionProposal;
 import org.eclipse.jdt.ui.PreferenceConstants;
 import org.eclipse.jdt.ui.text.java.IJavaCompletionProposal;
 import org.eclipse.jface.preference.IPreferenceStore;
@@ -75,6 +77,33 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
             // Best effort — linked mode won't work but completion still applies
+        }
+    }
+
+    /** Cached reflective handle to {@code AbstractJavaCompletionProposal.fToggleEating}. */
+    private static volatile Field fToggleEatingField;
+
+    /**
+     * Sets the delegate's private {@code fToggleEating} flag. JDT only sets it inside the
+     * viewer-level {@code apply()} that this wrapper bypasses, yet the flag feeds
+     * {@code isToggleEating()} / {@code isInsertModeToggled()}, i.e. the delegate's own
+     * insert-vs-overwrite decisions such as whether a method proposal appends an argument list.
+     *
+     * @return {@code true} if the flag was set, {@code false} if the field is not accessible
+     */
+    private static boolean setToggleEating(AbstractJavaCompletionProposal target, boolean toggleEating) {
+        try {
+            Field f = fToggleEatingField;
+            if (f == null) {
+                f = AbstractJavaCompletionProposal.class.getDeclaredField("fToggleEating"); //$NON-NLS-1$
+                f.setAccessible(true);
+                fToggleEatingField = f;
+            }
+            f.setBoolean(target, toggleEating);
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            // Best effort — the delegate falls back to its own (preference-only) decision
+            return false;
         }
     }
 
@@ -202,9 +231,11 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
     @Override
     public void apply(IDocument document, char trigger, int offset) {
-        fixReplacementLength(offset);
-
-        if (delegate instanceof ICompletionProposalExtension ext) {
+        if (delegate instanceof AbstractJavaCompletionProposal ajcp
+                && delegate instanceof ICompletionProposalExtension ext) {
+            fixReplacementLength(offset);
+            applyDelegate(ajcp, ext, document, trigger, offset, false);
+        } else if (delegate instanceof ICompletionProposalExtension ext) {
             ext.apply(document, trigger, offset);
         } else {
             delegate.apply(document);
@@ -242,18 +273,22 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
     public void apply(ITextViewer viewer, char trigger, int stateMask, int offset) {
         if (delegate instanceof AbstractJavaCompletionProposal ajcp
                 && delegate instanceof ICompletionProposalExtension ext) {
+            IDocument document = viewer.getDocument();
+            // Ctrl toggles between insert and overwrite — same as
+            // AbstractJavaCompletionProposal.MODIFIER_TOGGLE_COMPLETION_MODE
+            boolean toggleEating = (stateMask & SWT.CTRL) != 0;
+
             // Compute replacement length respecting insert/overwrite mode.
             // Mirrors the logic in AbstractJavaCompletionProposal.apply(ITextViewer,...):
             //   insert mode  → replace prefix only (up to cursor)
             //   overwrite mode → extend past cursor to end of identifier
-            // Ctrl toggles between the two modes.
-            fixReplacementLengthForViewer(ajcp, viewer.getDocument(), offset, stateMask);
+            fixReplacementLengthForViewer(ajcp, document, offset, toggleEating);
 
             // Inject the ITextViewer so linked mode (parameter placeholders) works.
             // The normal ICompletionProposalExtension2.apply() does this, but we can't
             // use that path because its validate() gate rejects subsequence-only matches.
             injectTextViewer(ajcp, viewer);
-            ext.apply(viewer.getDocument(), trigger, offset);
+            applyDelegate(ajcp, ext, document, trigger, offset, toggleEating);
         } else {
             fixReplacementLength(offset);
             if (delegate instanceof ICompletionProposalExtension2 ext2) {
@@ -269,6 +304,14 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
     @Override
     public void selected(ITextViewer viewer, boolean smartToggle) {
+        if (delegate instanceof AbstractJavaCompletionProposal ajcp) {
+            // The delegate paints its overwrite-mode preview from its replacement length,
+            // which may still reflect the core proposal's replace range (newer JDT core
+            // parsers report a range up to the statement end). Sync it with the length
+            // apply() will actually use so the preview covers only the identifier.
+            Point selection = viewer.getSelectedRange();
+            fixReplacementLengthForViewer(ajcp, viewer.getDocument(), selection.x, smartToggle);
+        }
         if (delegate instanceof ICompletionProposalExtension2 ext2) {
             ext2.selected(viewer, smartToggle);
         }
@@ -305,28 +348,106 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
      * (from replacement offset to cursor). In <em>overwrite</em> mode it extends
      * past the cursor to the end of the Java identifier, replacing the suffix
      * that follows the cursor (e.g. "Enabled" in {@code setReq|Enabled}).
+     *
+     * @param toggleEating whether Ctrl is held, which toggles between the two modes
      */
     private static void fixReplacementLengthForViewer(
-            AbstractJavaCompletionProposal ajcp, IDocument document, int offset, int stateMask) {
+            AbstractJavaCompletionProposal ajcp, IDocument document, int offset, boolean toggleEating) {
         int replacementOffset = ajcp.getReplacementOffset();
         if (offset < replacementOffset) {
             return;
         }
         int end = offset;
-        // Ctrl toggles between insert and overwrite — same as
-        // AbstractJavaCompletionProposal.MODIFIER_TOGGLE_COMPLETION_MODE
-        boolean toggleEating = (stateMask & SWT.CTRL) != 0;
         if (!(insertCompletion() ^ toggleEating)) {
             // Overwrite mode: extend replacement to end of identifier after cursor
-            try {
-                while (end < document.getLength() && Character.isJavaIdentifierPart(document.getChar(end))) {
-                    end++;
-                }
-            } catch (BadLocationException e) {
-                // fall back to cursor position
-            }
+            end = CompletionUtils.findIdentifierEnd(document, offset);
         }
         ajcp.setReplacementLength(end - replacementOffset);
+    }
+
+    /**
+     * Applies the delegate through its document-level {@code apply()} after settling how it
+     * must treat the argument list and the insert/overwrite toggle.
+     * <p>
+     * When the completed identifier is immediately followed by {@code (}, the user is
+     * completing the name of an existing call, so a method or constructor proposal must insert
+     * the bare name and leave the existing argument list alone. JDT's
+     * {@code JavaMethodCompletionProposal.hasArgumentList()} only does that when it believes
+     * it is in overwrite mode <em>and</em> the core completion carries no parentheses. Newer
+     * JDT core parsers (which parse past the cursor) report a range up to the statement end
+     * and therefore keep the parentheses, so both inputs are fixed up here: the trailing
+     * {@code ()} is stripped from the core completion and the delegate's toggle-eating flag is
+     * set so that its decision comes out as "overwrite" regardless of the preference.
+     * <p>
+     * Otherwise the Ctrl toggle is forwarded exactly as
+     * {@code AbstractJavaCompletionProposal.apply(ITextViewer, ...)} would do; that method is
+     * bypassed because its prefix validation rejects subsequence matches.
+     */
+    private void applyDelegate(AbstractJavaCompletionProposal ajcp, ICompletionProposalExtension ext,
+            IDocument document, char trigger, int offset, boolean toggleEating) {
+        boolean nameOnly = delegate instanceof JavaMethodCompletionProposal
+                && isMethodInvocationKind(coreProposal)
+                && CompletionUtils.parenFollowsIdentifier(document, offset);
+
+        boolean toggle = toggleEating;
+        if (nameOnly) {
+            stripTrailingParentheses(coreProposal);
+            // hasArgumentList() is (insertPreference ^ toggleEating) || completionEndsWithParen;
+            // make the first term false whatever the preference is
+            toggle = insertCompletion();
+        }
+        boolean toggleApplied = setToggleEating(ajcp, toggle);
+
+        if (nameOnly) {
+            String bare = String.valueOf(coreProposal.getCompletion());
+            if (!toggleApplied) {
+                // Reflection failed: at least insert the right text (the delegate may still
+                // set up a degenerate linked position)
+                ajcp.setReplacementString(bare);
+            } else {
+                // Guard against a replacement string cached with an argument list before
+                // this call (the args variant ends with ')' or, for void methods, ';')
+                String replacement = ajcp.getReplacementString();
+                if (replacement.endsWith(")") || replacement.endsWith(";")) { //$NON-NLS-1$ //$NON-NLS-2$
+                    ajcp.setReplacementString(bare);
+                }
+            }
+        }
+
+        try {
+            ext.apply(document, trigger, offset);
+        } finally {
+            // JDT resets the flag after applying as well
+            setToggleEating(ajcp, false);
+        }
+    }
+
+    /**
+     * Returns whether the proposal inserts a method or constructor invocation, i.e. one of the
+     * kinds for which JDT may synthesize an argument list.
+     */
+    private static boolean isMethodInvocationKind(CompletionProposal proposal) {
+        if (proposal == null) {
+            return false;
+        }
+        return switch (proposal.getKind()) {
+            case CompletionProposal.METHOD_REF, CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER,
+                    CompletionProposal.CONSTRUCTOR_INVOCATION -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Removes a trailing {@code ()} from the core completion string, yielding what JDT core
+     * itself proposes when it sees the following {@code (} (the bare selector, or an empty
+     * completion for constructor invocations).
+     */
+    private static void stripTrailingParentheses(CompletionProposal proposal) {
+        char[] completion = proposal.getCompletion();
+        int length = completion.length;
+        if (length >= 2 && completion[length - 2] == '(' && completion[length - 1] == ')') {
+            proposal.setCompletion(Arrays.copyOf(completion, length - 2));
+        }
     }
 
     @Override
