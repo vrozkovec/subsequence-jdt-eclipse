@@ -5,4 +5,5 @@ Bundle-SymbolicName: org.eclipse.subsequence.jdt.tests
 Bundle-Version: 1.0.0.qualifier
 Fragment-Host: org.eclipse.subsequence.jdt;bundle-version="1.0.0"
 Bundle-RequiredExecutionEnvironment: JavaSE-21
-Require-Bundle: junit-jupiter-api
+Require-Bundle: junit-jupiter-api,
+ org.eclipse.jdt.launching
