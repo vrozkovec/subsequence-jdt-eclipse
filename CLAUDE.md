@@ -8,7 +8,9 @@ Eclipse plugin providing enhanced content assist with subsequence matching and f
 JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64 mvn clean verify
 ```
 
-Requires Maven 3.9+ (Tycho 4.0.8 refuses older versions) and a Java 21 JAVA_HOME (adjust the path to the local JDK install).
+Requires Maven 3.9+ (Tycho 4.0.13 refuses older versions) and a Java 21 JAVA_HOME (adjust the path to the local JDK install).
+
+Minimum supported Eclipse is **2025-03 (4.35)**: it is the first release whose JDT UI bundle (`org.eclipse.jdt.ui` 3.34.0) declares `JavaSE-21`, so every Eclipse that can host this plugin from that release on runs on Java 21. Accordingly both bundles declare `Bundle-RequiredExecutionEnvironment: JavaSE-21`, the manifest lower bounds are `org.eclipse.jdt.core [3.41.0,4.0.0)` and `org.eclipse.jdt.ui [3.34.0,4.0.0)`, the target platform is `https://download.eclipse.org/releases/2025-03`, and Java 21 language features and APIs may be used freely. No backward compatibility with older Eclipse releases or Java 17 is kept.
 
 Produces update site ZIP at `org.eclipse.subsequence.jdt.repository/target/org.eclipse.subsequence.jdt.repository-1.0.0-SNAPSHOT.zip`. The build also runs the unit tests in `org.eclipse.subsequence.jdt.tests` via tycho-surefire (headless OSGi runtime).
 

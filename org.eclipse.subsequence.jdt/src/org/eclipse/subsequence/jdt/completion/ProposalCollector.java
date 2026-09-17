@@ -11,16 +11,17 @@
 package org.eclipse.subsequence.jdt.completion;
 
 import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.jdt.core.CompletionContext;
 import org.eclipse.jdt.core.CompletionProposal;
 import org.eclipse.jdt.core.CompletionRequestor;
-import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.compiler.CharOperation;
 import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.internal.codeassist.InternalCompletionContext;
@@ -44,10 +45,49 @@ public class ProposalCollector extends CompletionRequestor {
 
     private static final ILog LOG = Platform.getLog(ProposalCollector.class);
 
-    /** Module declaration completion proposal kind (value 28). */
-    private static final int MODULE_DECLARATION = 28;
-    /** Module reference completion proposal kind (value 29). */
-    private static final int MODULE_REF = 29;
+    /** Proposal kinds the delegate collector accepts; it starts out ignoring every kind. */
+    private static final int[] ACCEPTED_KINDS = {
+            CompletionProposal.ANNOTATION_ATTRIBUTE_REF,
+            CompletionProposal.ANONYMOUS_CLASS_DECLARATION,
+            CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION,
+            CompletionProposal.FIELD_REF,
+            CompletionProposal.FIELD_REF_WITH_CASTED_RECEIVER,
+            CompletionProposal.KEYWORD,
+            CompletionProposal.LABEL_REF,
+            CompletionProposal.LOCAL_VARIABLE_REF,
+            CompletionProposal.METHOD_DECLARATION,
+            CompletionProposal.METHOD_NAME_REFERENCE,
+            CompletionProposal.METHOD_REF,
+            CompletionProposal.CONSTRUCTOR_INVOCATION,
+            CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER,
+            CompletionProposal.PACKAGE_REF,
+            CompletionProposal.POTENTIAL_METHOD_DECLARATION,
+            CompletionProposal.VARIABLE_DECLARATION,
+            CompletionProposal.MODULE_DECLARATION,
+            CompletionProposal.MODULE_REF,
+            CompletionProposal.TYPE_REF,
+            CompletionProposal.JAVADOC_BLOCK_TAG,
+            CompletionProposal.JAVADOC_FIELD_REF,
+            CompletionProposal.JAVADOC_INLINE_TAG,
+            CompletionProposal.JAVADOC_METHOD_REF,
+            CompletionProposal.JAVADOC_PARAM_REF,
+            CompletionProposal.JAVADOC_TYPE_REF,
+            CompletionProposal.JAVADOC_VALUE_REF,
+    };
+
+    /** {@code {proposal kind, required proposal kind}} pairs the delegate collector allows. */
+    private static final int[][] ALLOWED_REQUIRED_PROPOSALS = {
+            { CompletionProposal.FIELD_REF, CompletionProposal.TYPE_REF },
+            { CompletionProposal.FIELD_REF, CompletionProposal.TYPE_IMPORT },
+            { CompletionProposal.FIELD_REF, CompletionProposal.FIELD_IMPORT },
+            { CompletionProposal.METHOD_REF, CompletionProposal.TYPE_REF },
+            { CompletionProposal.METHOD_REF, CompletionProposal.TYPE_IMPORT },
+            { CompletionProposal.METHOD_REF, CompletionProposal.METHOD_IMPORT },
+            { CompletionProposal.CONSTRUCTOR_INVOCATION, CompletionProposal.TYPE_REF },
+            { CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION, CompletionProposal.TYPE_REF },
+            { CompletionProposal.ANONYMOUS_CLASS_DECLARATION, CompletionProposal.TYPE_REF },
+            { CompletionProposal.TYPE_REF, CompletionProposal.TYPE_REF },
+    };
 
     private static final Field F_PROPOSALS;
 
@@ -70,11 +110,11 @@ public class ProposalCollector extends CompletionRequestor {
     private InternalCompletionContext compilerContext;
 
     /**
-     * Creates a new proposal collector for the given context and compilation unit.
+     * Creates a new proposal collector for the given invocation context.
      */
-    public ProposalCollector(JavaContentAssistInvocationContext ctx, ICompilationUnit cu) {
+    public ProposalCollector(JavaContentAssistInvocationContext ctx) {
         super(false);
-        this.jdtuiContext = java.util.Objects.requireNonNull(ctx);
+        this.jdtuiContext = Objects.requireNonNull(ctx);
         initializeCollector();
     }
 
@@ -89,80 +129,14 @@ public class ProposalCollector extends CompletionRequestor {
     }
 
     private void configureInterestedProposalTypes() {
-        // Un-ignore all standard proposal types (collector starts with ignoreAll=true)
-        setIgnoreNonTypes(false);
-        setIgnoreTypes(false);
-
-        // Accept javadoc proposal types
-        setIgnoredSafely(CompletionProposal.JAVADOC_BLOCK_TAG, false);
-        setIgnoredSafely(CompletionProposal.JAVADOC_FIELD_REF, false);
-        setIgnoredSafely(CompletionProposal.JAVADOC_INLINE_TAG, false);
-        setIgnoredSafely(CompletionProposal.JAVADOC_METHOD_REF, false);
-        setIgnoredSafely(CompletionProposal.JAVADOC_PARAM_REF, false);
-        setIgnoredSafely(CompletionProposal.JAVADOC_TYPE_REF, false);
-        setIgnoredSafely(CompletionProposal.JAVADOC_VALUE_REF, false);
-
-        // Allow required proposals
-        setAllowsRequiredProposalsSafely(CompletionProposal.FIELD_REF, CompletionProposal.TYPE_REF, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.FIELD_REF, CompletionProposal.TYPE_IMPORT, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.FIELD_REF, CompletionProposal.FIELD_IMPORT, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.METHOD_REF, CompletionProposal.TYPE_REF, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.METHOD_REF, CompletionProposal.TYPE_IMPORT, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.METHOD_REF, CompletionProposal.METHOD_IMPORT, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.CONSTRUCTOR_INVOCATION, CompletionProposal.TYPE_REF, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION, CompletionProposal.TYPE_REF, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.ANONYMOUS_CLASS_DECLARATION, CompletionProposal.TYPE_REF, true);
-        setAllowsRequiredProposalsSafely(CompletionProposal.TYPE_REF, CompletionProposal.TYPE_REF, true);
-
+        for (int kind : ACCEPTED_KINDS) {
+            collector.setIgnored(kind, false);
+        }
+        for (int[] pair : ALLOWED_REQUIRED_PROPOSALS) {
+            collector.setAllowsRequiredProposals(pair[0], pair[1], true);
+        }
         collector.setFavoriteReferences(getFavoriteStaticMembers());
         collector.setRequireExtendedContext(true);
-    }
-
-    private void setIgnoredSafely(int completionProposalKind, boolean ignore) {
-        try {
-            collector.setIgnored(completionProposalKind, ignore);
-        } catch (IllegalArgumentException e) {
-            // Proposal kind not supported in this JDT version - ignore safely
-        }
-    }
-
-    /**
-     * Un-ignores (or ignores) all non-type proposal kinds on the delegate collector.
-     */
-    private void setIgnoreNonTypes(boolean ignored) {
-        setIgnoredSafely(CompletionProposal.ANNOTATION_ATTRIBUTE_REF, ignored);
-        setIgnoredSafely(CompletionProposal.ANONYMOUS_CLASS_DECLARATION, ignored);
-        setIgnoredSafely(CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION, ignored);
-        setIgnoredSafely(CompletionProposal.FIELD_REF, ignored);
-        setIgnoredSafely(CompletionProposal.FIELD_REF_WITH_CASTED_RECEIVER, ignored);
-        setIgnoredSafely(CompletionProposal.KEYWORD, ignored);
-        setIgnoredSafely(CompletionProposal.LABEL_REF, ignored);
-        setIgnoredSafely(CompletionProposal.LOCAL_VARIABLE_REF, ignored);
-        setIgnoredSafely(CompletionProposal.METHOD_DECLARATION, ignored);
-        setIgnoredSafely(CompletionProposal.METHOD_NAME_REFERENCE, ignored);
-        setIgnoredSafely(CompletionProposal.METHOD_REF, ignored);
-        setIgnoredSafely(CompletionProposal.CONSTRUCTOR_INVOCATION, ignored);
-        setIgnoredSafely(CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER, ignored);
-        setIgnoredSafely(CompletionProposal.PACKAGE_REF, ignored);
-        setIgnoredSafely(CompletionProposal.POTENTIAL_METHOD_DECLARATION, ignored);
-        setIgnoredSafely(CompletionProposal.VARIABLE_DECLARATION, ignored);
-        setIgnoredSafely(MODULE_DECLARATION, ignored);
-        setIgnoredSafely(MODULE_REF, ignored);
-    }
-
-    /**
-     * Un-ignores (or ignores) type reference proposals on the delegate collector.
-     */
-    private void setIgnoreTypes(boolean ignored) {
-        setIgnoredSafely(CompletionProposal.TYPE_REF, ignored);
-    }
-
-    private void setAllowsRequiredProposalsSafely(int proposalKind, int requiredProposalKind, boolean allow) {
-        try {
-            collector.setAllowsRequiredProposals(proposalKind, requiredProposalKind, allow);
-        } catch (IllegalArgumentException e) {
-            // Proposal kind not supported in this JDT version - ignore safely
-        }
     }
 
     @Override
@@ -257,9 +231,7 @@ public class ProposalCollector extends CompletionRequestor {
         int oldSize = collector.getJavaCompletionProposals().length;
         collector.accept(proposal);
         IJavaCompletionProposal[] jdtProposals = collector.getJavaCompletionProposals();
-        IJavaCompletionProposal[] newProposals = new IJavaCompletionProposal[jdtProposals.length - oldSize];
-        System.arraycopy(jdtProposals, oldSize, newProposals, 0, newProposals.length);
-        return newProposals;
+        return Arrays.copyOfRange(jdtProposals, oldSize, jdtProposals.length);
     }
 
     /**

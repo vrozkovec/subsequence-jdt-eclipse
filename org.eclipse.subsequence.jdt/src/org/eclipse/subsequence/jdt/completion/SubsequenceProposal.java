@@ -146,13 +146,9 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
     @Override
     public StyledString getStyledDisplayString() {
-        StyledString original;
-        if (delegate instanceof ICompletionProposalExtension6 ext6) {
-            original = ext6.getStyledDisplayString();
-        } else {
-            original = new StyledString(delegate.getDisplayString());
-        }
-
+        StyledString original = delegate instanceof ICompletionProposalExtension6 ext6
+                ? ext6.getStyledDisplayString()
+                : null;
         if (original == null) {
             original = new StyledString(delegate.getDisplayString());
         }

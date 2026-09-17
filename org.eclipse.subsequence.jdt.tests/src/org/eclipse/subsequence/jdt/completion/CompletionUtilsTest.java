@@ -61,6 +61,11 @@ class CompletionUtilsTest {
     }
 
     @Test
+    void testJavadocValueWithoutHash() {
+        assertEquals("Example", CompletionUtils.getPrefixMatchingArea("{@value Example}"));
+    }
+
+    @Test
     void testPlainIdentifier() {
         assertEquals("HashMap", CompletionUtils.getPrefixMatchingArea("HashMap"));
     }

@@ -166,7 +166,7 @@ public final class JbifParser {
             char c = sig.charAt(i);
             if (c == 'L') {
                 count++;
-                i = sig.indexOf(';', i) + 1;
+                i = sig.indexOf(';', i, end) + 1;
                 if (i <= 0) {
                     break;
                 }

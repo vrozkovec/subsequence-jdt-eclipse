@@ -200,7 +200,7 @@ public final class CompletionTracker {
 		}
 
 		try {
-			Map<String, Map<String, Double>> result = new HashMap<>();
+			Map<String, Map<String, Double>> result = HashMap.newHashMap(data.size());
 
 			for (var typeEntry : data.entrySet()) {
 				ConcurrentHashMap<String, MethodCounts> methodCounts = typeEntry.getValue();
@@ -213,7 +213,7 @@ public final class CompletionTracker {
 					continue;
 				}
 
-				Map<String, Double> normalized = new HashMap<>();
+				Map<String, Double> normalized = HashMap.newHashMap(methodCounts.size());
 				for (var methodEntry : methodCounts.entrySet()) {
 					normalized.put(methodEntry.getKey(), (double) methodEntry.getValue().total() / maxTotal);
 				}

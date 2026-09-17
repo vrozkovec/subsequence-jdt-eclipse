@@ -155,7 +155,7 @@ public class WorkspaceAnalyzer extends AbstractHandler {
      */
     private static void analyzeCompilationUnit(IJavaProject project, ICompilationUnit cu,
             Map<String, Map<String, Integer>> counts) {
-        ASTParser parser = ASTParser.newParser(AST.JLS17);
+        ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
         parser.setResolveBindings(true);
         parser.setProject(project);
         parser.setSource(cu);

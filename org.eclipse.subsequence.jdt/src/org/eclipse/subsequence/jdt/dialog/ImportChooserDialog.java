@@ -10,10 +10,7 @@ package org.eclipse.subsequence.jdt.dialog;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.eclipse.jdt.core.Flags;
 import org.eclipse.jdt.core.search.TypeNameMatch;
-import org.eclipse.jdt.ui.ISharedImages;
-import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jface.dialogs.IDialogConstants;
 import org.eclipse.jface.dialogs.TitleAreaDialog;
 import org.eclipse.jface.viewers.ArrayContentProvider;
@@ -77,7 +74,7 @@ public class ImportChooserDialog extends TitleAreaDialog {
         // Auto-resolve pages with exactly one remaining choice
         for (int i = 0; i < pages.size(); i++) {
             if (pages.get(i).size() == 1) {
-                selections[i] = pages.get(i).get(0);
+                selections[i] = pages.get(i).getFirst();
             }
         }
 
@@ -109,12 +106,7 @@ public class ImportChooserDialog extends TitleAreaDialog {
             IStructuredSelection sel = tableViewer.getStructuredSelection();
             if (!sel.isEmpty()) {
                 selections[currentPage] = (TypeNameMatch) sel.getFirstElement();
-                if (hasNextUnresolved()) {
-                    goToNextUnresolved();
-                } else {
-                    setReturnCode(OK);
-                    close();
-                }
+                goToNextUnresolved();
             }
         });
 
@@ -175,22 +167,12 @@ public class ImportChooserDialog extends TitleAreaDialog {
 
         if (page.size() == 1) {
             // Auto-select the only remaining choice
-            selections[currentPage] = page.get(0);
-            if (hasNextUnresolved()) {
-                goToNextUnresolved();
-            } else {
-                setReturnCode(OK);
-                close();
-            }
+            selections[currentPage] = page.getFirst();
+            goToNextUnresolved();
         } else if (page.isEmpty()) {
             // No choices left — skip this import
             selections[currentPage] = null;
-            if (hasNextUnresolved()) {
-                goToNextUnresolved();
-            } else {
-                setReturnCode(OK);
-                close();
-            }
+            goToNextUnresolved();
         } else {
             tableViewer.setInput(page);
             tableViewer.getTable().select(0);
@@ -220,31 +202,28 @@ public class ImportChooserDialog extends TitleAreaDialog {
 
     @Override
     protected void buttonPressed(int buttonId) {
-        if (buttonId == SKIP_ID) {
-            selections[currentPage] = null;
-            if (hasNextUnresolved()) {
+        switch (buttonId) {
+            case SKIP_ID -> {
+                selections[currentPage] = null;
                 goToNextUnresolved();
-            } else {
+            }
+            case BACK_ID -> goToPreviousPage();
+            case NEXT_ID -> {
+                saveCurrentSelection();
+                goToNextUnresolved();
+            }
+            case FINISH_ID -> {
+                saveCurrentSelection();
+                // Auto-select first item for any remaining unresolved pages
+                for (int i = 0; i < pages.size(); i++) {
+                    if (selections[i] == null && !pages.get(i).isEmpty()) {
+                        selections[i] = pages.get(i).getFirst();
+                    }
+                }
                 setReturnCode(OK);
                 close();
             }
-        } else if (buttonId == BACK_ID) {
-            goToPreviousPage();
-        } else if (buttonId == NEXT_ID) {
-            saveCurrentSelection();
-            goToNextUnresolved();
-        } else if (buttonId == FINISH_ID) {
-            saveCurrentSelection();
-            // Auto-select first item for any remaining unresolved pages
-            for (int i = 0; i < pages.size(); i++) {
-                if (selections[i] == null && !pages.get(i).isEmpty()) {
-                    selections[i] = pages.get(i).get(0);
-                }
-            }
-            setReturnCode(OK);
-            close();
-        } else {
-            super.buttonPressed(buttonId);
+            default -> super.buttonPressed(buttonId);
         }
     }
 
@@ -257,7 +236,7 @@ public class ImportChooserDialog extends TitleAreaDialog {
             selections[currentPage] = selected;
         } else if (!pages.get(currentPage).isEmpty()) {
             // Default to first item if nothing explicitly selected
-            selections[currentPage] = pages.get(currentPage).get(0);
+            selections[currentPage] = pages.get(currentPage).getFirst();
         }
     }
 
@@ -284,7 +263,8 @@ public class ImportChooserDialog extends TitleAreaDialog {
     }
 
     /**
-     * Advances to the next page that still needs user input.
+     * Advances to the next page that still needs user input, or closes the dialog with
+     * {@link #OK} when no such page is left.
      */
     private void goToNextUnresolved() {
         for (int i = currentPage + 1; i < pages.size(); i++) {
@@ -393,25 +373,9 @@ public class ImportChooserDialog extends TitleAreaDialog {
         @Override
         public Image getImage(Object element) {
             if (element instanceof TypeNameMatch match) {
-                return getTypeImage(match.getModifiers());
+                return TypeImages.forModifiers(match.getModifiers());
             }
             return null;
-        }
-
-        private Image getTypeImage(int modifiers) {
-            try {
-                if (Flags.isInterface(modifiers)) {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_INTERFACE);
-                } else if (Flags.isEnum(modifiers)) {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_ENUM);
-                } else if (Flags.isAnnotation(modifiers)) {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_ANNOTATION);
-                } else {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_CLASS);
-                }
-            } catch (Exception e) {
-                return null;
-            }
         }
     }
 }

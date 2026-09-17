@@ -41,6 +41,7 @@ public final class CompletionUtils {
      * {@link Example}                --> Example
      * {@link Example#method()}       --> method
      * {@value Collections#EMPTY_LIST}--> EMPTY_LIST
+     * {@value Example}               --> Example
      * &lt;blockquote&gt;            --> blockquote
      * &lt;/blockquote&gt;           --> blockquote
      * </pre>
@@ -105,8 +106,8 @@ public final class CompletionUtils {
     private static String stripValueOrLinkDelimiters(String string) {
         if (string.startsWith("{@value ") && string.endsWith("}")) { //$NON-NLS-1$ //$NON-NLS-2$
             int lastIndexOfHash = string.lastIndexOf('#');
-            int start = lastIndexOfHash < 0 ? "{@value ".length() : lastIndexOfHash; //$NON-NLS-1$
-            return string.substring(start + 1, string.length() - 1);
+            int start = lastIndexOfHash < 0 ? "{@value ".length() : lastIndexOfHash + 1; //$NON-NLS-1$
+            return string.substring(start, string.length() - 1);
         } else if (string.startsWith("{@link ") && string.endsWith("}")) { //$NON-NLS-1$ //$NON-NLS-2$
             int lastIndexOfHash = string.lastIndexOf('#');
             int start = lastIndexOfHash < 0 ? "{@link ".length() : lastIndexOfHash + 1; //$NON-NLS-1$

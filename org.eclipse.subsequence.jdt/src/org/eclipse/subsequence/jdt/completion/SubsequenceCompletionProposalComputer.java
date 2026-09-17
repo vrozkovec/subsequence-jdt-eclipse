@@ -16,6 +16,7 @@ import static java.lang.Math.min;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -81,10 +82,6 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
     public static final int CASE_SENSITIVE_EXACT_MATCH_START = 16
             * (RelevanceConstants.R_EXACT_NAME + RelevanceConstants.R_CASE);
     public static final int CASE_INSENSITIVE_EXACT_MATCH_START = 16 * RelevanceConstants.R_EXACT_NAME;
-
-    // MODULE_DECLARATION and MODULE_REF constants (may not exist in older JDT)
-    private static final int MODULE_DECLARATION = 28;
-    private static final int MODULE_REF = 29;
 
     /** One-shot guard so the automatic workspace analysis is considered once per session. */
     private static final AtomicBoolean autoAnalysisTriggered = new AtomicBoolean();
@@ -235,7 +232,7 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
     private SortedSet<Integer> computeTriggerLocations(int offset, ASTNode completionNode,
             ASTNode completionNodeParent, int length, int minPrefixLengthForTypes) {
         // Trigger at higher locations first, as the base relevance assigned by JDT may depend on the prefix.
-        SortedSet<Integer> triggerLocations = new TreeSet<>(java.util.Comparator.reverseOrder());
+        SortedSet<Integer> triggerLocations = new TreeSet<>(Comparator.reverseOrder());
         int emptyPrefix = offset - length;
 
         // Method stub creation proposals like exe --> private void exe()
@@ -354,9 +351,6 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
                     }
                     yield sb.toString();
                 }
-                case CompletionProposal.JAVADOC_PARAM_REF, CompletionProposal.JAVADOC_BLOCK_TAG,
-                        CompletionProposal.JAVADOC_INLINE_TAG, MODULE_DECLARATION, MODULE_REF ->
-                    javaProposal.getDisplayString();
                 default -> javaProposal.getDisplayString();
             };
         }
@@ -419,7 +413,7 @@ public class SubsequenceCompletionProposalComputer implements IJavaCompletionPro
 
     private ProposalCollector computeProposals(ICompilationUnit cu,
             JavaContentAssistInvocationContext coreContext, int offset) {
-        ProposalCollector collector = new ProposalCollector(coreContext, cu);
+        ProposalCollector collector = new ProposalCollector(coreContext);
         try {
             cu.codeComplete(offset, collector, new NullProgressMonitor());
         } catch (Exception e) {

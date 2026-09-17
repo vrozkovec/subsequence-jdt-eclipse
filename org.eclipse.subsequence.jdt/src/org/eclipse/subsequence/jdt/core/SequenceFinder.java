@@ -14,7 +14,6 @@ import static java.lang.Character.*;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -91,14 +90,8 @@ public class SequenceFinder {
             nextSequences = new ArrayList<>();
         }
 
-        // filter
-        for (Iterator<int[]> it = curSequences.iterator(); it.hasNext();) {
-            int[] candidate = it.next();
-            if (candidate.length < token.length()) {
-                it.remove();
-                continue;
-            }
-        }
+        // drop partial matches
+        curSequences.removeIf(candidate -> candidate.length < token.length());
 
         return curSequences;
     }

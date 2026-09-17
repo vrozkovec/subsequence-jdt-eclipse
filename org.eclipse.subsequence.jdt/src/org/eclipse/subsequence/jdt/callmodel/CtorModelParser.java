@@ -146,7 +146,7 @@ public final class CtorModelParser {
 		for (int i = 0; i < s.length(); i++) {
 			if (i + 5 < s.length() && s.charAt(i) == '\\' && s.charAt(i + 1) == 'u') {
 				try {
-					char c = (char) Integer.parseInt(s.substring(i + 2, i + 6), 16);
+					char c = (char) Integer.parseInt(s, i + 2, i + 6, 16);
 					sb.append(c);
 					i += 5;
 				} catch (NumberFormatException e) {

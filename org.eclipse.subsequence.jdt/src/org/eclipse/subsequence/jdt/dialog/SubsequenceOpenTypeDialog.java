@@ -20,15 +20,12 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
-import org.eclipse.jdt.core.Flags;
 import org.eclipse.jdt.core.compiler.CharOperation;
 import org.eclipse.jdt.core.search.IJavaSearchConstants;
 import org.eclipse.jdt.core.search.IJavaSearchScope;
 import org.eclipse.jdt.core.search.SearchEngine;
 import org.eclipse.jdt.core.search.SearchPattern;
 import org.eclipse.jdt.core.search.TypeNameRequestor;
-import org.eclipse.jdt.ui.ISharedImages;
-import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jface.dialogs.DialogSettings;
 import org.eclipse.jface.dialogs.IDialogSettings;
 import org.eclipse.jface.viewers.DelegatingStyledCellLabelProvider.IStyledLabelProvider;
@@ -252,13 +249,8 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
 
     @Override
     protected Comparator<TypeEntry> getItemsComparator() {
-        return (e1, e2) -> {
-            int cmp = e1.simpleName().compareToIgnoreCase(e2.simpleName());
-            if (cmp != 0) {
-                return cmp;
-            }
-            return e1.packageName().compareToIgnoreCase(e2.packageName());
-        };
+        return Comparator.comparing(TypeEntry::simpleName, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(TypeEntry::packageName, String.CASE_INSENSITIVE_ORDER);
     }
 
     @Override
@@ -435,7 +427,7 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
         @Override
         public Image getImage(Object element) {
             if (element instanceof TypeEntry entry) {
-                return getTypeImage(entry.modifiers());
+                return TypeImages.forModifiers(entry.modifiers());
             }
             return null;
         }
@@ -451,22 +443,6 @@ public class SubsequenceOpenTypeDialog extends FilteredItemsSelectionDialog {
                 styled.append(" - " + entry.packageName(), StyledString.QUALIFIER_STYLER); //$NON-NLS-1$
             }
             return styled;
-        }
-
-        private Image getTypeImage(int modifiers) {
-            try {
-                if (Flags.isInterface(modifiers)) {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_INTERFACE);
-                } else if (Flags.isEnum(modifiers)) {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_ENUM);
-                } else if (Flags.isAnnotation(modifiers)) {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_ANNOTATION);
-                } else {
-                    return JavaUI.getSharedImages().getImage(ISharedImages.IMG_OBJS_CLASS);
-                }
-            } catch (Exception e) {
-                return null;
-            }
         }
     }
 

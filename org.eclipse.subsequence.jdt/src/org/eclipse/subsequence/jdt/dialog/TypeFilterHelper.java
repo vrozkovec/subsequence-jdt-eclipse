@@ -38,9 +38,11 @@ public final class TypeFilterHelper {
     private static final ScopedPreferenceStore JDT_UI_STORE = new ScopedPreferenceStore(InstanceScope.INSTANCE,
             JDT_UI_PLUGIN_ID);
 
-    /** Cached filter set and the raw preference value it was parsed from. */
-    private static volatile String cachedRawValue;
-    private static volatile Set<String> cachedFilters;
+    /** Cached filter set together with the raw preference value it was parsed from. */
+    private record FilterCache(String rawValue, Set<String> filters) {
+    }
+
+    private static volatile FilterCache cache;
 
     private TypeFilterHelper() {
         // Not meant to be instantiated
@@ -65,9 +67,7 @@ public final class TypeFilterHelper {
 
         String newValue = joinFilters(filters);
         JDT_UI_STORE.setValue(TYPE_FILTER_ENABLED_KEY, newValue);
-        // Invalidate cache
-        cachedRawValue = newValue;
-        cachedFilters = filters;
+        cache = new FilterCache(newValue, filters);
         try {
             JDT_UI_STORE.save();
         } catch (IOException e) {
@@ -117,13 +117,13 @@ public final class TypeFilterHelper {
      */
     private static Set<String> getFilters() {
         String current = JDT_UI_STORE.getString(TYPE_FILTER_ENABLED_KEY);
-        // Check cache — compare raw string identity/equality to detect external changes
-        if (current.equals(cachedRawValue) && cachedFilters != null) {
-            return cachedFilters;
+        // Compare the raw string so that external preference changes are picked up
+        FilterCache cached = cache;
+        if (cached != null && current.equals(cached.rawValue())) {
+            return cached.filters();
         }
         Set<String> filters = parseFilters(current);
-        cachedRawValue = current;
-        cachedFilters = filters;
+        cache = new FilterCache(current, filters);
         return filters;
     }
 

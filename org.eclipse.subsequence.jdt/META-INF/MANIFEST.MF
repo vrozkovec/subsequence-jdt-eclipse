@@ -5,13 +5,13 @@ Bundle-SymbolicName: org.eclipse.subsequence.jdt;singleton:=true
 Bundle-Version: 1.0.0.qualifier
 Bundle-Name: Subsequence Matching for JDT Content Assist
 Bundle-Vendor: Eclipse Contributors
-Bundle-RequiredExecutionEnvironment: JavaSE-17
+Bundle-RequiredExecutionEnvironment: JavaSE-21
 Bundle-ActivationPolicy: lazy
 Require-Bundle: org.eclipse.core.runtime,
  org.eclipse.core.resources,
- org.eclipse.jdt.core;bundle-version="[3.14.0,4.0.0)",
+ org.eclipse.jdt.core;bundle-version="[3.41.0,4.0.0)",
  org.eclipse.jdt.core.manipulation,
- org.eclipse.jdt.ui;bundle-version="[3.14.0,4.0.0)",
+ org.eclipse.jdt.ui;bundle-version="[3.34.0,4.0.0)",
  org.eclipse.jface.text,
  org.eclipse.text,
  org.eclipse.ui
