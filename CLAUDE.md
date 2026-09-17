@@ -27,7 +27,7 @@ Produces update site ZIP at `org.eclipse.subsequence.jdt.repository/target/org.e
     - `CompletionTracker` — dual-counter store (workspace scan + accepted completions) persisted to the plugin state location; normalized view is memoized
   - `core/` — `LCSS` subsequence matching algorithm
   - `dialog/` — Open Type dialog alternative with subsequence matching (dialog size/history persisted to the plugin state location)
-  - `preferences/` — preference page for model directory path and min prefix length; shows which model ZIPs were found in the configured directory
+  - `preferences/` — preference page for model directory path, min prefix length and the diagnostic log file; shows which model ZIPs were found in the configured directory
 - `org.eclipse.subsequence.jdt.tests/` — test fragment (`Fragment-Host: org.eclipse.subsequence.jdt`, `eclipse-test-plugin` packaging, JUnit 5)
 - `org.eclipse.subsequence.jdt.feature/` — Eclipse feature
 - `org.eclipse.subsequence.jdt.repository/` — p2 update site
@@ -53,6 +53,38 @@ ZIP entries use raw type names as paths (e.g., `java/util/HashMap.jbif`), no gen
 - **Workspace analysis**: manual via Navigate > Analyze Workspace Method Calls, plus one automatic background run on first completion when no workspace data exists; re-analysis replaces workspace counts and resets acceptance counts (the scan already includes previously accepted completions)
 - **Hot-path discipline**: no file I/O during completion (frequency data is cached, `CompletionTracker.getNormalizedData()` is memoized), and LCSS matching runs once per proposal with a cheap in-order pre-check before full enumeration
 - **Name-only completion before an existing `(`**: method/constructor proposals never synthesize an argument list when the completed identifier is directly followed by `(` (e.g. `deleteAll|(Foo.class)` keeps its arguments); `SubsequenceProposal` strips a trailing `()` from the core completion and forces the delegate's overwrite decision (`fToggleEating`, via reflection) because JDT's insert mode always appends an argument list and newer JDT core parsers report a range up to the statement end, which keeps the parentheses even in overwrite mode
+
+## Diagnostic logging
+
+Completion misbehaviour has so far only been reproducible in a real workspace, so
+`CompletionDiagnostics` appends one trace per accepted completion to the file named by the
+`subwords_diagnostic_log_path` preference (Java > Editor > Content Assist > Subsequence Matching >
+"Diagnostic log file"). Empty path = off, which is the default.
+
+Each trace records the caret line, insert/overwrite mode and the `nameOnly` decision, the delegate
+class, the core proposal and its required proposals with their ranges and completion strings, and
+the replacement string plus resulting line *after* apply. A "fallback path" trace means the delegate
+was not an `AbstractJavaCompletionProposal`; **no trace at all** means the accepted proposal did not
+come from this plugin.
+
+The delegate's replacement string is deliberately read only after apply — reading it earlier caches
+it (`LazyJavaCompletionProposal.getReplacementString()`) and would change the behaviour being traced.
+`SubsequenceApplyEndToEndTest.diagnosticLogRecordsTheApply` covers the trace itself.
+
+## Testing
+
+`org.eclipse.subsequence.jdt.tests` runs under tycho-surefire with `useUIHarness=true`, so the build
+needs a display (`DISPLAY=:0 mvn clean verify`, or Xvfb). Besides the unit tests it drives real JDT
+completion against a workspace it creates:
+
+- `CompletionEngineProbeTest` — what jdt.core actually proposes, at the caret and at the reduced
+  trigger offsets the computer uses. Documents that the engine reports the token under the *real*
+  caret whatever offset it was triggered at, because `CompletionScanner` scans the whole identifier;
+  do not assume the ranges drift
+- `ConstructorCompletionApplyTest` — the same completion applied through plain JDT, as a baseline
+- `SubsequenceApplyEndToEndTest` — the full plugin path (computer → `SubsequenceProposal.apply`) over
+  a real viewer, across three source shapes (plain anonymous class, anonymous class in nested
+  argument lists, two anonymous classes deep) × insert/overwrite × fill-argument-names
 
 ## Ancestry
 

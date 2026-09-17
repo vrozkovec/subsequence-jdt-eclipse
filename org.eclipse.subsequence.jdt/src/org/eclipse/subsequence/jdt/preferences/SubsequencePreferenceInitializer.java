@@ -21,5 +21,6 @@ public class SubsequencePreferenceInitializer extends AbstractPreferenceInitiali
         IEclipsePreferences defaults = DefaultScope.INSTANCE.getNode(SubsequencePreferences.PLUGIN_ID);
         defaults.putInt(SubsequencePreferences.PREF_MIN_PREFIX_LENGTH_FOR_TYPES, 2);
         defaults.put(SubsequencePreferences.PREF_MODEL_DIR_PATH, ""); //$NON-NLS-1$
+        defaults.put(SubsequencePreferences.PREF_DIAGNOSTIC_LOG_PATH, ""); //$NON-NLS-1$
     }
 }

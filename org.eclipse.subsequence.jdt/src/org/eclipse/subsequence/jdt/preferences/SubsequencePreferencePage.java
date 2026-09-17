@@ -17,6 +17,7 @@ import org.eclipse.jface.preference.FieldEditor;
 import org.eclipse.jface.preference.FieldEditorPreferencePage;
 import org.eclipse.jface.preference.DirectoryFieldEditor;
 import org.eclipse.jface.preference.IntegerFieldEditor;
+import org.eclipse.jface.preference.StringFieldEditor;
 import org.eclipse.jface.util.PropertyChangeEvent;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.layout.GridData;
@@ -71,6 +72,19 @@ public class SubsequencePreferencePage extends FieldEditorPreferencePage impleme
                 "Model directory:",
                 getFieldEditorParent());
         addField(modelDirEditor);
+
+        StringFieldEditor diagnosticLogEditor = new StringFieldEditor(
+                SubsequencePreferences.PREF_DIAGNOSTIC_LOG_PATH,
+                "Diagnostic log file:",
+                getFieldEditorParent());
+        Text diagnosticControl = diagnosticLogEditor.getTextControl(getFieldEditorParent());
+        ControlDecoration diagnosticDec = new ControlDecoration(diagnosticControl, SWT.TOP | SWT.LEFT,
+                getFieldEditorParent());
+        diagnosticDec.setImage(infoDecoration.getImage());
+        diagnosticDec.setDescriptionText("Absolute path of a file to append one trace to per accepted "
+                + "completion: the core proposal, its ranges, the delegate, and the text that was actually "
+                + "inserted. Leave empty to switch diagnostic logging off.");
+        addField(diagnosticLogEditor);
 
         modelDirStatusLabel = new Label(getFieldEditorParent(), SWT.WRAP);
         GridData statusLayout = new GridData(SWT.FILL, SWT.TOP, true, false);

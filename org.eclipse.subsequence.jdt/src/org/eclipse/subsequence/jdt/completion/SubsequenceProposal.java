@@ -286,6 +286,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
             injectTextViewer(ajcp, viewer);
             applyDelegate(ajcp, ext, document, trigger, offset, toggleEating);
         } else {
+            CompletionDiagnostics.logFallback(delegate, coreProposal, viewer.getDocument(), offset);
             fixReplacementLength(offset);
             if (delegate instanceof ICompletionProposalExtension2 ext2) {
                 ext2.apply(viewer, trigger, stateMask, offset);
@@ -385,6 +386,10 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
                 && isMethodInvocationKind(coreProposal)
                 && CompletionUtils.parenFollowsIdentifier(document, offset);
 
+        // captured before any of the fix-ups below, so the trace shows what JDT core handed us
+        StringBuilder trace = CompletionDiagnostics.beforeApply(delegate, ajcp, coreProposal, document, offset,
+                insertCompletion(), toggleEating, nameOnly);
+
         boolean toggle = toggleEating;
         if (nameOnly) {
             stripTrailingParentheses(coreProposal);
@@ -415,6 +420,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
         } finally {
             // JDT resets the flag after applying as well
             setToggleEating(ajcp, false);
+            CompletionDiagnostics.afterApply(trace, ajcp, document);
         }
     }
 

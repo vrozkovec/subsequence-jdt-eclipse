@@ -159,6 +159,32 @@ class SubsequenceApplyEndToEndTest {
         assertKeepsArgumentList("OuterDeep.java", SOURCE_DEEP, "two anonymous classes deep");
     }
 
+    /** The diagnostic trace has to actually appear when the preference names a file. */
+    @Test
+    void diagnosticLogRecordsTheApply() throws Exception {
+        java.nio.file.Path log = java.nio.file.Files.createTempFile("subsequence-diagnostic", ".log");
+        java.nio.file.Files.delete(log);
+        org.eclipse.ui.preferences.ScopedPreferenceStore store = new org.eclipse.ui.preferences.ScopedPreferenceStore(
+                org.eclipse.core.runtime.preferences.InstanceScope.INSTANCE,
+                org.eclipse.subsequence.jdt.preferences.SubsequencePreferences.PLUGIN_ID);
+        store.setValue(org.eclipse.subsequence.jdt.preferences.SubsequencePreferences.PREF_DIAGNOSTIC_LOG_PATH,
+                log.toString());
+        try {
+            assertKeepsArgumentList("OuterLogged.java", SOURCE_DEEP, "diagnostic logging");
+
+            String trace = java.nio.file.Files.readString(log);
+            System.out.println("\n=== DIAGNOSTIC LOG ===\n" + trace);
+            assertTrue(trace.contains("subsequence completion apply"), "no trace header");
+            assertTrue(trace.contains("CONSTRUCTOR_INVOCATION"), "core proposal not recorded");
+            assertTrue(trace.contains("required[0]"), "required type proposal not recorded");
+            assertTrue(trace.contains("result"), "resulting line not recorded");
+        } finally {
+            store.setToDefault(
+                    org.eclipse.subsequence.jdt.preferences.SubsequencePreferences.PREF_DIAGNOSTIC_LOG_PATH);
+            java.nio.file.Files.deleteIfExists(log);
+        }
+    }
+
     private void assertKeepsArgumentList(String unitName, String source, String label) throws Exception {
         IJavaProject javaProject = createProject("e2e" + System.nanoTime());
         IPackageFragment pkg = createPackage(javaProject);

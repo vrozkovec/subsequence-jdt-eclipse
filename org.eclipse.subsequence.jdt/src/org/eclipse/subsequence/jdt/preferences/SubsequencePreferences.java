@@ -28,6 +28,9 @@ public final class SubsequencePreferences {
     /** Preference key for the path to the model directory containing ZIP archives. */
     public static final String PREF_MODEL_DIR_PATH = "subwords_model_dir_path"; //$NON-NLS-1$
 
+    /** Preference key for the diagnostic log file; empty disables diagnostic logging. */
+    public static final String PREF_DIAGNOSTIC_LOG_PATH = "subwords_diagnostic_log_path"; //$NON-NLS-1$
+
     /** Shared store — the getters run on the completion hot path, once per keystroke. */
     private static final ScopedPreferenceStore STORE = new ScopedPreferenceStore(InstanceScope.INSTANCE, PLUGIN_ID);
 
@@ -44,5 +47,14 @@ public final class SubsequencePreferences {
      */
     public static String getModelDirPath() {
         return STORE.getString(PREF_MODEL_DIR_PATH);
+    }
+
+    /**
+     * Returns the file diagnostic completion traces are appended to, or an empty string when
+     * diagnostic logging is switched off (the default).
+     */
+    public static String getDiagnosticLogPath() {
+        String path = STORE.getString(PREF_DIAGNOSTIC_LOG_PATH);
+        return path == null ? "" : path.trim(); //$NON-NLS-1$
     }
 }
