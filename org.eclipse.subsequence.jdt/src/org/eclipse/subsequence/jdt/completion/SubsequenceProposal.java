@@ -10,6 +10,9 @@ package org.eclipse.subsequence.jdt.completion;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 
+import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.Platform;
+
 import org.eclipse.jdt.core.CompletionProposal;
 import org.eclipse.jdt.internal.ui.JavaPlugin;
 import org.eclipse.jdt.internal.ui.text.java.AbstractJavaCompletionProposal;
@@ -47,6 +50,8 @@ import org.eclipse.swt.graphics.TextStyle;
 public class SubsequenceProposal implements IJavaCompletionProposal, ICompletionProposalExtension,
         ICompletionProposalExtension2, ICompletionProposalExtension3, ICompletionProposalExtension5,
         ICompletionProposalExtension6 {
+
+    private static final ILog LOG = Platform.getLog(SubsequenceProposal.class);
 
     private final IJavaCompletionProposal delegate;
     private final int adjustedRelevance;
@@ -417,11 +422,66 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
         try {
             ext.apply(document, trigger, offset);
+        } catch (RuntimeException e) {
+            // JDT's parameter guesser can hit a stale classpath jar and throw
+            // after the required type proposal has already inserted the name;
+            // finish the insertion rather than leaving a bare constructor
+            recoverReplacement(ajcp, document, trace, e);
         } finally {
             // JDT resets the flag after applying as well
             setToggleEating(ajcp, false);
             CompletionDiagnostics.afterApply(trace, ajcp, document);
         }
+    }
+
+    /**
+     * Finishes an apply that JDT abandoned half-way with a runtime exception.
+     * <p>
+     * {@code AbstractJavaCompletionProposal.apply} applies the required {@code TYPE_REF} proposal
+     * <em>before</em> it asks for the replacement string, so when computing that string throws the
+     * type name is already in the document but its argument list never arrives. Neither JDT's own
+     * {@code catch (BadLocationException)} nor {@code ParameterGuessingProposal}'s
+     * {@code catch (BadLocationException | BadPositionCategoryException)} covers a runtime
+     * exception, so the completion is left silently half applied — observed as
+     * {@code IllegalStateException: zip file closed} raised by the parameter guesser walking a
+     * classpath jar that a Maven build had replaced underneath it.
+     * <p>
+     * Asking for the replacement string again normally succeeds, so insert it here.
+     */
+    private static void recoverReplacement(AbstractJavaCompletionProposal ajcp, IDocument document,
+            StringBuilder trace, RuntimeException failure) {
+        CompletionDiagnostics.noteFailure(trace, failure);
+        try {
+            if (applyMissingReplacement(document, ajcp.getReplacementOffset(), ajcp.getReplacementLength(),
+                    ajcp.getReplacementString())) {
+                LOG.warn("Completion was abandoned mid-apply; inserted the missing replacement text", failure); //$NON-NLS-1$
+            }
+        } catch (BadLocationException | RuntimeException e) {
+            // the retry failed too — leave the document as JDT left it rather than corrupt it
+            LOG.warn("Completion was abandoned mid-apply and could not be recovered", failure); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Inserts {@code replacement} over {@code [start, start + length)} unless it is already there,
+     * so that recovering a half-applied completion cannot insert the text twice.
+     *
+     * @return whether the document was changed
+     */
+    static boolean applyMissingReplacement(IDocument document, int start, int length, String replacement)
+            throws BadLocationException {
+        if (replacement == null || replacement.isEmpty() || start < 0 || length < 0
+                || start + length > document.getLength()) {
+            return false;
+        }
+        // JDT leaves the replacement offset at the start of the text it inserted, so a replacement
+        // that already sits there means apply got far enough and must not be repeated
+        if (start + replacement.length() <= document.getLength()
+                && document.get(start, replacement.length()).equals(replacement)) {
+            return false;
+        }
+        document.replace(start, length, replacement);
+        return true;
     }
 
     /**

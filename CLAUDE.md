@@ -56,6 +56,18 @@ ZIP entries use raw type names as paths (e.g., `java/util/HashMap.jbif`), no gen
 - **Hot-path discipline**: no file I/O during completion (frequency data is cached, `CompletionTracker.getNormalizedData()` is memoized), and LCSS matching runs once per proposal with a cheap in-order pre-check before full enumeration
 - **Name-only completion before an existing `(`**: method/constructor proposals never synthesize an argument list when the completed identifier is directly followed by `(` (e.g. `deleteAll|(Foo.class)` keeps its arguments); `SubsequenceProposal` strips a trailing `()` from the core completion and forces the delegate's overwrite decision (`fToggleEating`, via reflection) because JDT's insert mode always appends an argument list and newer JDT core parsers report a range up to the statement end, which keeps the parentheses even in overwrite mode
 
+- **Recovery from a half-applied completion**: `AbstractJavaCompletionProposal.apply` applies the
+  required `TYPE_REF` proposal *before* it asks for the replacement string, so a runtime exception
+  while computing that string leaves the type name inserted and its argument list missing — JDT
+  catches only `BadLocationException` there, and `ParameterGuessingProposal` only that plus
+  `BadPositionCategoryException`. Observed in the wild as `IllegalStateException: zip file closed`
+  thrown by JDT's parameter guesser walking a classpath jar that a Maven build had replaced
+  underneath it, which produced a bare `new Foo` with no `(...)`. `SubsequenceProposal` therefore
+  catches `RuntimeException` around the delegate's apply and re-inserts the replacement string
+  (computing it again normally succeeds); `applyMissingReplacement` refuses to insert text that is
+  already there, so a completion that did get applied is never duplicated. The underlying stale jar
+  is an environment problem — Project > Clean is the actual cure
+
 ## Diagnostic logging
 
 Completion misbehaviour has so far only been reproducible in a real workspace, so
@@ -87,6 +99,8 @@ completion against a workspace it creates:
 - `SubsequenceApplyEndToEndTest` — the full plugin path (computer → `SubsequenceProposal.apply`) over
   a real viewer, across three source shapes (plain anonymous class, anonymous class in nested
   argument lists, two anonymous classes deep) × insert/overwrite × fill-argument-names
+- `RecoverReplacementTest` — the half-applied-completion recovery, in particular that it never
+  inserts the replacement twice
 
 ## Ancestry
 

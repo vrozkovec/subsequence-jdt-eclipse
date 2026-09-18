@@ -120,6 +120,18 @@ final class CompletionDiagnostics {
         }
     }
 
+    /** Records that the delegate's apply threw, so the trace shows a half-applied completion. */
+    static void noteFailure(StringBuilder trace, Throwable failure) {
+        if (trace == null) {
+            return;
+        }
+        try {
+            append(trace, "FAILED", failure.getClass().getName() + ": " + failure.getMessage()); //$NON-NLS-1$ //$NON-NLS-2$
+        } catch (RuntimeException e) {
+            // diagnostics must never break completion
+        }
+    }
+
     private static void append(StringBuilder trace, String label, String value) {
         trace.append("  ").append(label); //$NON-NLS-1$
         for (int i = label.length(); i < 13; i++) {
