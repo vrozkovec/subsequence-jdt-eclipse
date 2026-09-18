@@ -24,6 +24,7 @@ import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.DocumentEvent;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.IInformationControlCreator;
+import org.eclipse.jface.text.IRegion;
 import org.eclipse.jface.text.ITextViewer;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension2;
@@ -31,6 +32,10 @@ import org.eclipse.jface.text.contentassist.ICompletionProposalExtension3;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension5;
 import org.eclipse.jface.text.contentassist.ICompletionProposalExtension6;
 import org.eclipse.jface.text.contentassist.IContextInformation;
+import org.eclipse.jface.text.link.LinkedModeModel;
+import org.eclipse.jface.text.link.LinkedModeUI;
+import org.eclipse.jface.text.link.LinkedPosition;
+import org.eclipse.jface.text.link.LinkedPositionGroup;
 import org.eclipse.jface.viewers.StyledString;
 import org.eclipse.jface.viewers.StyledString.Styler;
 import org.eclipse.subsequence.jdt.callmodel.CallModelIndex;
@@ -60,6 +65,12 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
     private final CompletionProposal coreProposal;
     private final String matchingArea;
     private int[] matchedIndices;
+
+    /**
+     * Caret position to use when a half-applied completion had to be finished by
+     * {@link #recoverReplacement}; {@code null} when apply ran normally.
+     */
+    private Point recoveredSelection;
 
     /** Cached reflective handle to {@code AbstractJavaCompletionProposal.fTextViewer}. */
     private static volatile Field fTextViewerField;
@@ -225,6 +236,11 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
 
     @Override
     public Point getSelection(IDocument document) {
+        if (recoveredSelection != null) {
+            // the delegate never reached the point where it sets its own selection, and its
+            // fallback puts the caret in front of the text the recovery inserted
+            return recoveredSelection;
+        }
         return delegate.getSelection(document);
     }
 
@@ -235,7 +251,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
         if (delegate instanceof AbstractJavaCompletionProposal ajcp
                 && delegate instanceof ICompletionProposalExtension ext) {
             fixReplacementLength(offset);
-            applyDelegate(ajcp, ext, document, trigger, offset, false);
+            applyDelegate(ajcp, ext, null, document, trigger, offset, false);
         } else if (delegate instanceof ICompletionProposalExtension ext) {
             ext.apply(document, trigger, offset);
         } else {
@@ -289,7 +305,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
             // The normal ICompletionProposalExtension2.apply() does this, but we can't
             // use that path because its validate() gate rejects subsequence-only matches.
             injectTextViewer(ajcp, viewer);
-            applyDelegate(ajcp, ext, document, trigger, offset, toggleEating);
+            applyDelegate(ajcp, ext, viewer, document, trigger, offset, toggleEating);
         } else {
             CompletionDiagnostics.logFallback(delegate, coreProposal, viewer.getDocument(), offset);
             fixReplacementLength(offset);
@@ -386,7 +402,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
      * bypassed because its prefix validation rejects subsequence matches.
      */
     private void applyDelegate(AbstractJavaCompletionProposal ajcp, ICompletionProposalExtension ext,
-            IDocument document, char trigger, int offset, boolean toggleEating) {
+            ITextViewer viewer, IDocument document, char trigger, int offset, boolean toggleEating) {
         boolean nameOnly = delegate instanceof JavaMethodCompletionProposal
                 && isMethodInvocationKind(coreProposal)
                 && CompletionUtils.parenFollowsIdentifier(document, offset);
@@ -426,7 +442,7 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
             // JDT's parameter guesser can hit a stale classpath jar and throw
             // after the required type proposal has already inserted the name;
             // finish the insertion rather than leaving a bare constructor
-            recoverReplacement(ajcp, document, trace, e);
+            recoverReplacement(ajcp, viewer, document, trace, e);
         } finally {
             // JDT resets the flag after applying as well
             setToggleEating(ajcp, false);
@@ -448,18 +464,86 @@ public class SubsequenceProposal implements IJavaCompletionProposal, ICompletion
      * <p>
      * Asking for the replacement string again normally succeeds, so insert it here.
      */
-    private static void recoverReplacement(AbstractJavaCompletionProposal ajcp, IDocument document,
+    private void recoverReplacement(AbstractJavaCompletionProposal ajcp, ITextViewer viewer, IDocument document,
             StringBuilder trace, RuntimeException failure) {
         CompletionDiagnostics.noteFailure(trace, failure);
         try {
-            if (applyMissingReplacement(document, ajcp.getReplacementOffset(), ajcp.getReplacementLength(),
-                    ajcp.getReplacementString())) {
+            int start = ajcp.getReplacementOffset();
+            String replacement = ajcp.getReplacementString();
+            if (applyMissingReplacement(document, start, ajcp.getReplacementLength(), replacement)) {
+                recoveredSelection = selectionAfterRecovery(start, replacement);
+                enterLinkedMode(viewer, document, recoveredSelection, start + replacement.length());
                 LOG.warn("Completion was abandoned mid-apply; inserted the missing replacement text", failure); //$NON-NLS-1$
             }
         } catch (BadLocationException | RuntimeException e) {
             // the retry failed too — leave the document as JDT left it rather than corrupt it
             LOG.warn("Completion was abandoned mid-apply and could not be recovered", failure); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * Puts the recovered argument into linked mode, the way the delegate would have.
+     * <p>
+     * Without it the argument would merely be <em>selected</em>, so Enter would replace it with a
+     * newline instead of leaving the call and moving past the closing parenthesis.
+     *
+     * @param selection the argument region to link, empty when there is nothing to overtype
+     * @param exit      offset to jump to when the user leaves linked mode
+     */
+    private void enterLinkedMode(ITextViewer viewer, IDocument document, Point selection, int exit) {
+        if (viewer == null || selection == null || selection.y <= 0) {
+            return;
+        }
+        try {
+            LinkedPositionGroup group = new LinkedPositionGroup();
+            group.addPosition(new LinkedPosition(document, selection.x, selection.y, LinkedPositionGroup.NO_STOP));
+
+            LinkedModeModel model = new LinkedModeModel();
+            model.addGroup(group);
+            model.forceInstall();
+
+            LinkedModeUI ui = new LinkedModeUI(model, viewer);
+            ui.setExitPosition(viewer, exit, 0, Integer.MAX_VALUE);
+            ui.setCyclingMode(LinkedModeUI.CYCLE_WHEN_NO_PARENT);
+            ui.enter();
+
+            IRegion selected = ui.getSelectedRegion();
+            if (selected != null) {
+                recoveredSelection = new Point(selected.getOffset(), selected.getLength());
+            }
+        } catch (BadLocationException | RuntimeException e) {
+            // linked mode is a convenience — the text is already correct without it
+            recoveredSelection = selection;
+        }
+    }
+
+    /**
+     * Returns the selection to leave behind once a half-applied completion has been finished by
+     * hand.
+     * <p>
+     * When apply succeeds, JDT hands the guessed argument to linked mode with it selected so that
+     * overtyping replaces it. Linked mode is exactly what the aborted apply never reached, so
+     * approximate it: select the first argument inside the inserted argument list, put the caret
+     * between empty parentheses, or fall back to the end of the inserted text when there is no
+     * argument list at all.
+     */
+    static Point selectionAfterRecovery(int start, String replacement) {
+        if (replacement == null || replacement.isEmpty()) {
+            return new Point(start, 0);
+        }
+        int open = replacement.indexOf('(');
+        int close = replacement.lastIndexOf(')');
+        if (open < 0 || close < open) {
+            return new Point(start + replacement.length(), 0);
+        }
+        int argumentStart = open + 1;
+        int argumentEnd = close;
+        int comma = replacement.indexOf(',', argumentStart);
+        if (comma >= 0 && comma < close) {
+            // several arguments: select the first, as linked mode would have
+            argumentEnd = comma;
+        }
+        return new Point(start + argumentStart, argumentEnd - argumentStart);
     }
 
     /**

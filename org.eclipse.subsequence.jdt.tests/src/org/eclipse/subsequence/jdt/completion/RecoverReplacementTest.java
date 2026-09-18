@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.eclipse.jface.text.Document;
 import org.eclipse.jface.text.IDocument;
+import org.eclipse.swt.graphics.Point;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -74,6 +75,46 @@ class RecoverReplacementTest {
         assertFalse(SubsequenceProposal.applyMissingReplacement(document, 0, 0, null));
         assertFalse(SubsequenceProposal.applyMissingReplacement(document, 0, 0, ""));
         assertEquals(before, document.get());
+    }
+
+    @Test
+    void selectsTheGuessedArgumentSoItCanBeOvertyped() throws Exception {
+        IDocument document = new Document("return " + NAME + ";");
+        int start = document.get().indexOf(';');
+
+        assertTrue(SubsequenceProposal.applyMissingReplacement(document, start, 0, "(id)"));
+
+        Point selection = SubsequenceProposal.selectionAfterRecovery(start, "(id)");
+        assertEquals("id", document.get(selection.x, selection.y));
+    }
+
+    @Test
+    void putsTheCaretBetweenEmptyParentheses() {
+        Point selection = SubsequenceProposal.selectionAfterRecovery(10, "()");
+        assertEquals(11, selection.x);
+        assertEquals(0, selection.y);
+    }
+
+    @Test
+    void selectsTheFirstOfSeveralArguments() {
+        Point selection = SubsequenceProposal.selectionAfterRecovery(0, "(first, second)");
+        assertEquals(1, selection.x);
+        assertEquals("first".length(), selection.y);
+    }
+
+    @Test
+    void handlesAMethodNameBeforeTheArgumentList() {
+        Point selection = SubsequenceProposal.selectionAfterRecovery(0, "deleteAll(arg);");
+        assertEquals("deleteAll(".length(), selection.x);
+        assertEquals("arg".length(), selection.y);
+    }
+
+    @Test
+    void fallsBackToTheEndWithoutAnArgumentList() {
+        Point selection = SubsequenceProposal.selectionAfterRecovery(5, "name");
+        assertEquals(5 + "name".length(), selection.x);
+        assertEquals(0, selection.y);
+        assertEquals(new Point(5, 0), SubsequenceProposal.selectionAfterRecovery(5, ""));
     }
 
     /** A replacement running past the end of the document must still be insertable. */
